@@ -1,4 +1,5 @@
 all: main
+	./main
 
 entry.s: compiler.py
 	python3 compiler.py
