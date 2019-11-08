@@ -1,5 +1,7 @@
 #!/usr/bin/env python3.6
 
+# http://scheme2006.cs.uchicago.edu/11-ghuloum.pdf
+
 
 def emit(stream, text):
     stream.write(f"{text}\n")
