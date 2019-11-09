@@ -83,6 +83,15 @@ def prim_nullp(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
+def prim_not(stream, arg):
+    compile_expr(stream, arg)
+    emit(stream, f"xor eax, {BOOL_TAG}")
+    emit(stream, f"mov eax, 0")
+    emit(stream, f"sete al")
+    emit(stream, f"shl eax, {BOOL_SHIFT}")
+    emit(stream, f"or eax, {BOOL_TAG}")
+
+
 def compile_expr(stream, x):
     if is_immediate(x):
         mov(stream, "eax", imm(x))
@@ -96,6 +105,7 @@ def compile_expr(stream, x):
             "char->integer": prim_char_to_int,
             "zero?": prim_zerop,
             "null?": prim_nullp,
+            "not": prim_not,
         }
         table[op](stream, arg1)
         return
@@ -115,4 +125,4 @@ scheme_entry:""",
 
 if __name__ == "__main__":
     with open("entry.s", "w") as f:
-        compile_program(f, ["null?", []])
+        compile_program(f, ["not", True])
