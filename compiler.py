@@ -86,8 +86,8 @@ def compile_program(stream, x):
     emit(
         stream,
         """section .text
-global _scheme_entry
-_scheme_entry:""",
+global scheme_entry
+scheme_entry:""",
     )
     compile_expr(stream, x)
     emit(stream, "ret")
