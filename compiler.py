@@ -15,6 +15,7 @@ BOOL_SHIFT = 7
 BOOL_TAG = 0b0011111
 BOOL_MASK = 0b1111111
 NIL_TAG = 0b00101111
+WORD_SIZE = 4
 
 
 def is_immediate(x):
@@ -41,7 +42,7 @@ def mov(stream, dst, val):
 
 
 def is_primcall(x):
-    return isinstance(x, list) and len(x) == 2 and isinstance(x[0], str)
+    return isinstance(x, list) and x[0] in PRIMITIVE_TABLE
 
 
 def prim_add1(stream, arg):
@@ -114,24 +115,48 @@ def prim_booleanp(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
-def compile_expr(stream, x):
+def prim_binplus(stream, left, right, si):
+    compile_expr(stream, right, si)
+    emit(stream, f"mov [rsp-{si}], eax")
+    compile_expr(stream, left, si + WORD_SIZE)
+    emit(stream, f"add eax, [rsp-{si}]")
+
+
+prim_binplus.stack_index = True
+
+
+PRIMITIVE_TABLE = {
+    "add1": prim_add1,
+    "sub1": prim_sub1,
+    "integer->char": prim_int_to_char,
+    "char->integer": prim_char_to_int,
+    "zero?": prim_zerop,
+    "null?": prim_nullp,
+    "not": prim_not,
+    "integer?": prim_integerp,
+    "boolean?": prim_booleanp,
+    "+": prim_binplus,
+}
+
+
+WITH_STACKINDEX = {"+"}
+
+
+def emit_primcall(stream, x, si):
+    op, *args = x
+    fn = PRIMITIVE_TABLE[op]
+    if getattr(fn, "stack_index", False):
+        fn(stream, *args, si)
+    else:
+        fn(stream, *args)
+
+
+def compile_expr(stream, x, si):
     if is_immediate(x):
         mov(stream, "eax", imm(x))
         return
     elif is_primcall(x):
-        op, arg1, *args = x
-        table = {
-            "add1": prim_add1,
-            "sub1": prim_sub1,
-            "integer->char": prim_int_to_char,
-            "char->integer": prim_char_to_int,
-            "zero?": prim_zerop,
-            "null?": prim_nullp,
-            "not": prim_not,
-            "integer?": prim_integerp,
-            "boolean?": prim_booleanp,
-        }
-        table[op](stream, arg1)
+        emit_primcall(stream, x, si)
         return
     raise ValueError(x)
 
@@ -143,10 +168,10 @@ def compile_program(stream, x):
 global scheme_entry
 scheme_entry:""",
     )
-    compile_expr(stream, x)
+    compile_expr(stream, x, si=WORD_SIZE)
     emit(stream, "ret")
 
 
 if __name__ == "__main__":
     with open("entry.s", "w") as f:
-        compile_program(f, ["boolean?", 5])
+        compile_program(f, ["+", 1, ["+", 2, 3]])
