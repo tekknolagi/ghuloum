@@ -18,6 +18,11 @@ NIL_TAG = 0b00101111
 WORD_SIZE = 4
 
 
+class Var:
+    def __init__(self, name):
+        self.name = name
+
+
 def is_immediate(x):
     return isinstance(x, (bool, int, str)) or x == []
 
@@ -42,34 +47,34 @@ def mov(stream, dst, val):
 
 
 def is_primcall(x):
-    return isinstance(x, list) and x[0] in PRIMITIVE_TABLE
+    return isinstance(x, list) and len(x) >= 2 and x[0] in PRIMITIVE_TABLE
 
 
-def prim_add1(stream, arg):
-    compile_expr(stream, arg)
+def prim_add1(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     emit(stream, f"add eax, {imm(1)}")
 
 
-def prim_sub1(stream, arg):
-    compile_expr(stream, arg)
+def prim_sub1(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     emit(stream, f"sub eax, {imm(1)}")
 
 
-def prim_int_to_char(stream, arg):
-    compile_expr(stream, arg)
+def prim_int_to_char(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     # ints are already "shifted" 2 over
     emit(stream, f"shl eax, 6")
     emit(stream, f"add eax, {CHAR_TAG}")
 
 
-def prim_char_to_int(stream, arg):
-    compile_expr(stream, arg)
+def prim_char_to_int(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     # ints should have 2 trailing zeroes
     emit(stream, f"shr eax, 6")
 
 
-def prim_zerop(stream, arg):
-    compile_expr(stream, arg)
+def prim_zerop(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     emit(stream, f"cmp eax, 0")
     emit(stream, f"mov eax, 0")
     emit(stream, f"sete al")
@@ -77,8 +82,8 @@ def prim_zerop(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
-def prim_nullp(stream, arg):
-    compile_expr(stream, arg)
+def prim_nullp(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     emit(stream, f"cmp eax, {NIL_TAG}")
     emit(stream, f"mov eax, 0")
     emit(stream, f"sete al")
@@ -86,8 +91,8 @@ def prim_nullp(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
-def prim_not(stream, arg):
-    compile_expr(stream, arg)
+def prim_not(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     emit(stream, f"xor eax, {BOOL_TAG}")
     emit(stream, f"mov eax, 0")
     emit(stream, f"sete al")
@@ -95,8 +100,8 @@ def prim_not(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
-def prim_integerp(stream, arg):
-    compile_expr(stream, arg)
+def prim_integerp(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     emit(stream, f"and eax, {FIXNUM_MASK}")
     emit(stream, f"cmp eax, 0")
     emit(stream, f"mov eax, 0")
@@ -105,8 +110,8 @@ def prim_integerp(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
-def prim_booleanp(stream, arg):
-    compile_expr(stream, arg)
+def prim_booleanp(stream, arg, si, env):
+    compile_expr(stream, arg, si, env)
     emit(stream, f"and eax, {BOOL_MASK}")
     emit(stream, f"cmp eax, {BOOL_TAG}")
     emit(stream, f"mov eax, 0")
@@ -115,24 +120,18 @@ def prim_booleanp(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
-def prim_binplus(stream, left, right, si):
-    compile_expr(stream, right, si)
+def prim_binplus(stream, left, right, si, env):
+    compile_expr(stream, right, si, env)
     emit(stream, f"mov [rsp-{si}], eax")
-    compile_expr(stream, left, si + WORD_SIZE)
+    compile_expr(stream, left, si + WORD_SIZE, env)
     emit(stream, f"add eax, [rsp-{si}]")
 
 
-prim_binplus.stack_index = True
-
-
-def prim_binminus(stream, left, right, si):
-    compile_expr(stream, right, si)
+def prim_binminus(stream, left, right, si, env):
+    compile_expr(stream, right, si, env)
     emit(stream, f"mov [rsp-{si}], eax")
-    compile_expr(stream, left, si + WORD_SIZE)
+    compile_expr(stream, left, si + WORD_SIZE, env)
     emit(stream, f"sub eax, [rsp-{si}]")
-
-
-prim_binminus.stack_index = True
 
 
 PRIMITIVE_TABLE = {
@@ -150,36 +149,61 @@ PRIMITIVE_TABLE = {
 }
 
 
-def emit_primcall(stream, x, si):
+def emit_primcall(stream, x, si, env):
     op, *args = x
     fn = PRIMITIVE_TABLE[op]
-    if getattr(fn, "stack_index", False):
-        fn(stream, *args, si)
-    else:
-        fn(stream, *args)
+    fn(stream, *args, si, env)
 
 
-def compile_expr(stream, x, si):
+def is_let(x):
+    return isinstance(x, list) and len(x) == 3 and x[0] == "let"
+
+
+def compile_let(stream, bindings, body, si, env):
+    if not bindings:
+        compile_expr(stream, body, si, env)
+        return
+    new_env = env.copy()
+    name, expr = bindings[0]
+    compile_expr(stream, expr, si, env)
+    emit(stream, f"mov [rsp-{si}], eax")
+    new_env[name] = si
+    compile_let(stream, bindings[1:], body, si + WORD_SIZE, new_env)
+
+
+def compile_expr(stream, x, si, env):
     if is_immediate(x):
         mov(stream, "eax", imm(x))
         return
     elif is_primcall(x):
-        emit_primcall(stream, x, si)
+        emit_primcall(stream, x, si, env)
+        return
+    elif isinstance(x, Var):
+        # compile_var(stream, x)
+        offset = env[x.name]
+        emit(stream, f"mov eax, [rsp-{offset}]")
+        return
+    elif is_let(x):
+        bindings = x[1]
+        body = x[2]
+        compile_let(stream, bindings, body, si, env)
         return
     raise ValueError(x)
 
 
-def compile_program(stream, x):
+def compile_program(stream, x, env=None):
     emit(
         stream,
         """section .text
 global scheme_entry
 scheme_entry:""",
     )
-    compile_expr(stream, x, si=WORD_SIZE)
+    if env is None:
+        env = {}
+    compile_expr(stream, x, WORD_SIZE, env)
     emit(stream, "ret")
 
 
 if __name__ == "__main__":
     with open("entry.s", "w") as f:
-        compile_program(f, ["-", 5, 2])
+        compile_program(f, ["let", [["x", 4]], ["+", 1, Var("x")]])
