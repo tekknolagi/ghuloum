@@ -8,10 +8,12 @@ def emit(stream, text):
 
 
 FIXNUM_SHIFT = 2
+FIXNUM_MASK = 0x3
 CHAR_SHIFT = 8
 CHAR_TAG = 0b00001111
 BOOL_SHIFT = 7
 BOOL_TAG = 0b0011111
+BOOL_MASK = 0b1111111
 NIL_TAG = 0b00101111
 
 
@@ -92,6 +94,26 @@ def prim_not(stream, arg):
     emit(stream, f"or eax, {BOOL_TAG}")
 
 
+def prim_integerp(stream, arg):
+    compile_expr(stream, arg)
+    emit(stream, f"and eax, {FIXNUM_MASK}")
+    emit(stream, f"cmp eax, 0")
+    emit(stream, f"mov eax, 0")
+    emit(stream, f"sete al")
+    emit(stream, f"shl eax, {BOOL_SHIFT}")
+    emit(stream, f"or eax, {BOOL_TAG}")
+
+
+def prim_booleanp(stream, arg):
+    compile_expr(stream, arg)
+    emit(stream, f"and eax, {BOOL_MASK}")
+    emit(stream, f"cmp eax, {BOOL_TAG}")
+    emit(stream, f"mov eax, 0")
+    emit(stream, f"sete al")
+    emit(stream, f"shl eax, {BOOL_SHIFT}")
+    emit(stream, f"or eax, {BOOL_TAG}")
+
+
 def compile_expr(stream, x):
     if is_immediate(x):
         mov(stream, "eax", imm(x))
@@ -106,6 +128,8 @@ def compile_expr(stream, x):
             "zero?": prim_zerop,
             "null?": prim_nullp,
             "not": prim_not,
+            "integer?": prim_integerp,
+            "boolean?": prim_booleanp,
         }
         table[op](stream, arg1)
         return
@@ -125,4 +149,4 @@ scheme_entry:""",
 
 if __name__ == "__main__":
     with open("entry.s", "w") as f:
-        compile_program(f, ["not", True])
+        compile_program(f, ["boolean?", 5])
