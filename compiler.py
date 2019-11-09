@@ -125,6 +125,16 @@ def prim_binplus(stream, left, right, si):
 prim_binplus.stack_index = True
 
 
+def prim_binminus(stream, left, right, si):
+    compile_expr(stream, right, si)
+    emit(stream, f"mov [rsp-{si}], eax")
+    compile_expr(stream, left, si + WORD_SIZE)
+    emit(stream, f"sub eax, [rsp-{si}]")
+
+
+prim_binminus.stack_index = True
+
+
 PRIMITIVE_TABLE = {
     "add1": prim_add1,
     "sub1": prim_sub1,
@@ -136,10 +146,8 @@ PRIMITIVE_TABLE = {
     "integer?": prim_integerp,
     "boolean?": prim_booleanp,
     "+": prim_binplus,
+    "-": prim_binminus,
 }
-
-
-WITH_STACKINDEX = {"+"}
 
 
 def emit_primcall(stream, x, si):
@@ -174,4 +182,4 @@ scheme_entry:""",
 
 if __name__ == "__main__":
     with open("entry.s", "w") as f:
-        compile_program(f, ["+", 1, ["+", 2, 3]])
+        compile_program(f, ["-", 5, 2])
