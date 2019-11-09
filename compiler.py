@@ -171,6 +171,36 @@ def compile_let(stream, bindings, body, si, env):
     compile_let(stream, bindings[1:], body, si + WORD_SIZE, new_env)
 
 
+LABEL_COUNTER = -1
+
+
+def unique_label():
+    global LABEL_COUNTER
+    LABEL_COUNTER += 1
+    return f"L{LABEL_COUNTER}"
+
+
+def emit_label(stream, label):
+    emit(stream, f"{label}:")
+
+
+def is_if(x):
+    return isinstance(x, list) and len(x) == 4 and x[0] == "if"
+
+
+def compile_if(stream, cond, consequent, alternative, si, env):
+    L0 = unique_label()
+    L1 = unique_label()
+    compile_expr(stream, cond, si, env)
+    emit(stream, f"cmp eax, {imm(False)}")
+    emit(stream, f"je {L0}")
+    compile_expr(stream, consequent, si, env)
+    emit(stream, f"jmp {L1}")
+    emit_label(stream, L0)
+    compile_expr(stream, alternative, si, env)
+    emit_label(stream, L1)
+
+
 def compile_expr(stream, x, si, env):
     if is_immediate(x):
         mov(stream, "eax", imm(x))
@@ -187,6 +217,9 @@ def compile_expr(stream, x, si, env):
         bindings = x[1]
         body = x[2]
         compile_let(stream, bindings, body, si, env)
+        return
+    elif is_if(x):
+        compile_if(stream, *x[1:], si, env)
         return
     raise ValueError(x)
 
@@ -206,4 +239,4 @@ scheme_entry:""",
 
 if __name__ == "__main__":
     with open("entry.s", "w") as f:
-        compile_program(f, ["let", [["x", 4]], ["+", 1, Var("x")]])
+        compile_program(f, ["if", False, 3, 4])
