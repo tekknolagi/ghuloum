@@ -65,6 +65,15 @@ def prim_char_to_int(stream, arg):
     emit(stream, f"shr eax, 6")
 
 
+def prim_zerop(stream, arg):
+    compile_expr(stream, arg)
+    emit(stream, f"cmp eax, 0")
+    emit(stream, f"mov eax, 0")
+    emit(stream, f"sete al")
+    emit(stream, f"shl eax, {BOOL_SHIFT}")
+    emit(stream, f"or eax, {BOOL_TAG}")
+
+
 def compile_expr(stream, x):
     if is_immediate(x):
         mov(stream, "eax", imm(x))
@@ -76,6 +85,7 @@ def compile_expr(stream, x):
             "sub1": prim_sub1,
             "integer->char": prim_int_to_char,
             "char->integer": prim_char_to_int,
+            "zero?": prim_zerop,
         }
         table[op](stream, arg1)
         return
@@ -95,4 +105,4 @@ scheme_entry:""",
 
 if __name__ == "__main__":
     with open("entry.s", "w") as f:
-        compile_program(f, ["integer->char", 65])
+        compile_program(f, ["zero?", 0])
