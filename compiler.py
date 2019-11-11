@@ -3,6 +3,10 @@
 # http://scheme2006.cs.uchicago.edu/11-ghuloum.pdf
 
 
+import sexpdata
+import sys
+
+
 def emit(stream, text):
     stream.write(f"{text}\n")
 
@@ -238,5 +242,8 @@ scheme_entry:""",
 
 
 if __name__ == "__main__":
-    with open("entry.s", "w") as f:
-        compile_program(f, ["if", False, 3, 4])
+    with open(sys.argv[1], "r") as infile:
+        sexp = sexpdata.load(infile, true="#t", false="#f")
+
+    with open(sys.argv[2], "w") as outfile:
+        compile_program(outfile, sexp)
