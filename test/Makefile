@@ -1,7 +1,7 @@
 all:
 	@./run_tests.sh
 
-build/%.s: %.in
+build/%.s: %.in ../compiler.py
 	echo "Running test" $*"..."
 	python3 ../compiler.py $< $@
 
