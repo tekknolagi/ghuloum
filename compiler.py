@@ -21,6 +21,7 @@ BOOL_MASK = 0b1111111
 NIL_TAG = 0b00101111
 PAIR_TAG = 0b1
 WORD_SIZE = 8
+PAIR_SIZE = WORD_SIZE * 2
 HEAP_PTR = "rsi"
 
 
@@ -144,20 +145,20 @@ def prim_cons(stream, car, cdr, si, env):
     compile_expr(stream, car, si, env)
     emit(stream, f"mov [{HEAP_PTR}], rax")
     compile_expr(stream, cdr, si, env)
-    emit(stream, f"mov [{HEAP_PTR}+4], rax")
+    emit(stream, f"mov [{HEAP_PTR}+{WORD_SIZE}], rax")
     emit(stream, f"mov rax, {HEAP_PTR}")
     emit(stream, f"or rax, {PAIR_TAG}")
-    emit(stream, f"add {HEAP_PTR}, {WORD_SIZE}")
+    emit(stream, f"add {HEAP_PTR}, {PAIR_SIZE}")
 
 
 def prim_car(stream, expr, si, env):
     compile_expr(stream, expr, si, env)
-    emit(stream, f"mov rax, [rax-1]")
+    emit(stream, f"mov rax, [rax-{PAIR_TAG}]")
 
 
 def prim_cdr(stream, expr, si, env):
     compile_expr(stream, expr, si, env)
-    emit(stream, f"mov rax, [rax+3]")
+    emit(stream, f"mov rax, [rax+{WORD_SIZE-PAIR_TAG}]")
 
 
 PRIMITIVE_TABLE = {

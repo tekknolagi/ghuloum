@@ -132,10 +132,10 @@ class CompilerTests(unittest.TestCase):
                 mov rax, 0x4
                 mov [rsi], rax
                 mov rax, 0x8
-                mov [rsi+4], rax
+                mov [rsi+8], rax
                 mov rax, rsi
                 or rax, 1
-                add rsi, 8
+                add rsi, 16
                 """
             ),
         )
@@ -159,7 +159,7 @@ class CompilerTests(unittest.TestCase):
             textwrap.dedent(
                 """\
                 mov rax, 0xc
-                mov rax, [rax+3]
+                mov rax, [rax+7]
                 """
             ),
         )
