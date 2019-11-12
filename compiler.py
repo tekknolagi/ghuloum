@@ -22,16 +22,11 @@ NIL_TAG = 0b00101111
 WORD_SIZE = 4
 
 
-class Var:
-    def __init__(self, name):
-        self.name = name
-
-
 def is_immediate(x):
     return isinstance(x, (bool, int, str)) or x == []
 
 
-def imm(x):
+def imm_int(x):
     if not is_immediate(x):
         raise ValueError(x)
     if isinstance(x, bool):
@@ -46,12 +41,21 @@ def imm(x):
         return NIL_TAG
 
 
+def imm(x):
+    return hex(imm_int(x))
+
+
 def mov(stream, dst, val):
     emit(stream, f"mov {dst}, {val}")
 
 
 def is_primcall(x):
-    return isinstance(x, list) and len(x) >= 2 and x[0] in PRIMITIVE_TABLE
+    return (
+        isinstance(x, list)
+        and len(x) >= 2
+        and isinstance(x[0], sexpdata.Symbol)
+        and x[0].value() in PRIMITIVE_TABLE
+    )
 
 
 def prim_add1(stream, arg, si, env):
@@ -155,12 +159,17 @@ PRIMITIVE_TABLE = {
 
 def emit_primcall(stream, x, si, env):
     op, *args = x
-    fn = PRIMITIVE_TABLE[op]
+    fn = PRIMITIVE_TABLE[op.value()]
     fn(stream, *args, si, env)
 
 
 def is_let(x):
-    return isinstance(x, list) and len(x) == 3 and x[0] == "let"
+    return (
+        isinstance(x, list)
+        and len(x) == 3
+        and isinstance(x[0], sexpdata.Symbol)
+        and x[0].value() == "let"
+    )
 
 
 def compile_let(stream, bindings, body, si, env):
@@ -171,7 +180,7 @@ def compile_let(stream, bindings, body, si, env):
     name, expr = bindings[0]
     compile_expr(stream, expr, si, env)
     emit(stream, f"mov [rsp-{si}], eax")
-    new_env[name] = si
+    new_env[name.value()] = si
     compile_let(stream, bindings[1:], body, si + WORD_SIZE, new_env)
 
 
@@ -189,7 +198,12 @@ def emit_label(stream, label):
 
 
 def is_if(x):
-    return isinstance(x, list) and len(x) == 4 and x[0] == "if"
+    return (
+        isinstance(x, list)
+        and len(x) == 4
+        and isinstance(x[0], sexpdata.Symbol)
+        and x[0].value() == "if"
+    )
 
 
 def compile_if(stream, cond, consequent, alternative, si, env):
@@ -212,9 +226,8 @@ def compile_expr(stream, x, si, env):
     elif is_primcall(x):
         emit_primcall(stream, x, si, env)
         return
-    elif isinstance(x, Var):
-        # compile_var(stream, x)
-        offset = env[x.name]
+    elif isinstance(x, sexpdata.Symbol):
+        offset = env[x.value()]
         emit(stream, f"mov eax, [rsp-{offset}]")
         return
     elif is_let(x):
