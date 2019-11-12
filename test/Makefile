@@ -1,9 +1,9 @@
 all:
 	@./run_tests.sh
 
-build/%.s: %.in ../compiler.py
+build/%.s: %.in ../compiler.py ../compile_expr.py
 	echo "Running test" $*"..."
-	python3 ../compiler.py $< $@
+	python3 ../compile_expr.py $< $@
 
 build/%.o: %.c
 	gcc -c $< -o $@
