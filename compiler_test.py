@@ -2,14 +2,14 @@
 import io
 import unittest
 import textwrap
-from compiler import imm, compile_expr, sexpdata, reset_labels
+from compiler import imm, Compiler, sexpdata
 
 
 def compile_to_str(exp, si=0, env=None):
     env = {} if env is None else env
-    stream = io.StringIO()
-    compile_expr(stream, exp, si, env)
-    return stream.getvalue()
+    c = Compiler(io.StringIO())
+    c.visit_exp(exp, si, env)
+    return c.stream.getvalue()
 
 
 class CompilerTests(unittest.TestCase):
@@ -105,8 +105,40 @@ class CompilerTests(unittest.TestCase):
             ),
         )
 
+    def test_compile_let(self):
+        program = sexpdata.loads("(let ((x 3) (y 4)) (+ x y))")
+        self.assertEqual(
+            compile_to_str(program),
+            textwrap.dedent(
+                """\
+                mov rax, 0xc
+                mov [rsp-0], rax
+                mov rax, 0x10
+                mov [rsp-8], rax
+                mov rax, [rsp-8]
+                mov [rsp-16], rax
+                mov rax, [rsp-0]
+                add rax, [rsp-16]
+                """
+            ),
+        )
+
+    def test_compile_let_repeated_name(self):
+        program = sexpdata.loads("(let ((x 3) (x 4)) x)")
+        self.assertEqual(
+            compile_to_str(program),
+            textwrap.dedent(
+                """\
+                mov rax, 0xc
+                mov [rsp-0], rax
+                mov rax, 0x10
+                mov [rsp-8], rax
+                mov rax, [rsp-8]
+                """
+            ),
+        )
+
     def test_compile_simple_if(self):
-        reset_labels()
         program = sexpdata.loads("(if #t 3 4)", true="#t", false="#f")
         self.assertEqual(
             compile_to_str(program),
@@ -186,7 +218,6 @@ class CompilerTests(unittest.TestCase):
         )
 
     def test_compile_labels(self):
-        reset_labels()
         self.assertEqual(
             compile_to_str(
                 sexpdata.loads(
@@ -208,7 +239,6 @@ class CompilerTests(unittest.TestCase):
         )
 
     def test_compile_labelcall(self):
-        reset_labels()
         self.assertEqual(
             compile_to_str(sexpdata.loads("(labelcall x 1 2 3)"), env={"x": "L123"}),
             textwrap.dedent(
@@ -225,7 +255,6 @@ class CompilerTests(unittest.TestCase):
         )
 
     def test_compile_labelcall_id(self):
-        reset_labels()
         self.assertEqual(
             compile_to_str(
                 sexpdata.loads(
@@ -252,7 +281,6 @@ class CompilerTests(unittest.TestCase):
         )
 
     def test_compile_empty_labels(self):
-        reset_labels()
         program = sexpdata.loads(
             """
         (labels () 4)

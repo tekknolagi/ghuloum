@@ -7,10 +7,6 @@ import sexpdata
 import sys
 
 
-def emit(stream, text):
-    stream.write(f"{text}\n")
-
-
 FIXNUM_SHIFT = 2
 FIXNUM_MASK = 0x3
 CHAR_SHIFT = 8
@@ -57,108 +53,108 @@ def is_primcall(x):
     )
 
 
-def prim_add1(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
-    emit(stream, f"add rax, {imm(1)}")
+def prim_add1(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
+    compiler.emit(f"add rax, {imm(1)}")
 
 
-def prim_sub1(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
-    emit(stream, f"sub rax, {imm(1)}")
+def prim_sub1(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
+    compiler.emit(f"sub rax, {imm(1)}")
 
 
-def prim_int_to_char(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
+def prim_int_to_char(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
     # ints are already "shifted" 2 over
-    emit(stream, f"shl rax, 6")
-    emit(stream, f"add rax, {CHAR_TAG}")
+    compiler.emit(f"shl rax, 6")
+    compiler.emit(f"add rax, {CHAR_TAG}")
 
 
-def prim_char_to_int(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
+def prim_char_to_int(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
     # ints should have 2 trailing zeroes
-    emit(stream, f"shr rax, 6")
+    compiler.emit(f"shr rax, 6")
 
 
-def prim_zerop(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
-    emit(stream, f"cmp rax, 0")
-    emit(stream, f"mov rax, 0")
-    emit(stream, f"sete al")
-    emit(stream, f"shl rax, {BOOL_SHIFT}")
-    emit(stream, f"or rax, {BOOL_TAG}")
+def prim_zerop(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
+    compiler.emit(f"cmp rax, 0")
+    compiler.emit(f"mov rax, 0")
+    compiler.emit(f"sete al")
+    compiler.emit(f"shl rax, {BOOL_SHIFT}")
+    compiler.emit(f"or rax, {BOOL_TAG}")
 
 
-def prim_nullp(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
-    emit(stream, f"cmp rax, {NIL_TAG}")
-    emit(stream, f"mov rax, 0")
-    emit(stream, f"sete al")
-    emit(stream, f"shl rax, {BOOL_SHIFT}")
-    emit(stream, f"or rax, {BOOL_TAG}")
+def prim_nullp(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
+    compiler.emit(f"cmp rax, {NIL_TAG}")
+    compiler.emit(f"mov rax, 0")
+    compiler.emit(f"sete al")
+    compiler.emit(f"shl rax, {BOOL_SHIFT}")
+    compiler.emit(f"or rax, {BOOL_TAG}")
 
 
-def prim_not(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
-    emit(stream, f"xor rax, {BOOL_TAG}")
-    emit(stream, f"mov rax, 0")
-    emit(stream, f"sete al")
-    emit(stream, f"shl rax, {BOOL_SHIFT}")
-    emit(stream, f"or rax, {BOOL_TAG}")
+def prim_not(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
+    compiler.emit(f"xor rax, {BOOL_TAG}")
+    compiler.emit(f"mov rax, 0")
+    compiler.emit(f"sete al")
+    compiler.emit(f"shl rax, {BOOL_SHIFT}")
+    compiler.emit(f"or rax, {BOOL_TAG}")
 
 
-def prim_integerp(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
-    emit(stream, f"and rax, {FIXNUM_MASK}")
-    emit(stream, f"cmp rax, 0")
-    emit(stream, f"mov rax, 0")
-    emit(stream, f"sete al")
-    emit(stream, f"shl rax, {BOOL_SHIFT}")
-    emit(stream, f"or rax, {BOOL_TAG}")
+def prim_integerp(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
+    compiler.emit(f"and rax, {FIXNUM_MASK}")
+    compiler.emit(f"cmp rax, 0")
+    compiler.emit(f"mov rax, 0")
+    compiler.emit(f"sete al")
+    compiler.emit(f"shl rax, {BOOL_SHIFT}")
+    compiler.emit(f"or rax, {BOOL_TAG}")
 
 
-def prim_booleanp(stream, arg, si, env):
-    compile_expr(stream, arg, si, env)
-    emit(stream, f"and rax, {BOOL_MASK}")
-    emit(stream, f"cmp rax, {BOOL_TAG}")
-    emit(stream, f"mov rax, 0")
-    emit(stream, f"sete al")
-    emit(stream, f"shl rax, {BOOL_SHIFT}")
-    emit(stream, f"or rax, {BOOL_TAG}")
+def prim_booleanp(compiler, arg, stack_index, env):
+    compiler.visit_exp(arg, stack_index, env)
+    compiler.emit(f"and rax, {BOOL_MASK}")
+    compiler.emit(f"cmp rax, {BOOL_TAG}")
+    compiler.emit(f"mov rax, 0")
+    compiler.emit(f"sete al")
+    compiler.emit(f"shl rax, {BOOL_SHIFT}")
+    compiler.emit(f"or rax, {BOOL_TAG}")
 
 
-def prim_binplus(stream, left, right, si, env):
-    compile_expr(stream, right, si, env)
-    emit(stream, f"mov [rsp-{si}], rax")
-    compile_expr(stream, left, si + WORD_SIZE, env)
-    emit(stream, f"add rax, [rsp-{si}]")
+def prim_binplus(compiler, left, right, stack_index, env):
+    compiler.visit_exp(right, stack_index, env)
+    compiler.emit(f"mov [rsp-{stack_index}], rax")
+    compiler.visit_exp(left, stack_index + WORD_SIZE, env)
+    compiler.emit(f"add rax, [rsp-{stack_index}]")
 
 
-def prim_binminus(stream, left, right, si, env):
-    compile_expr(stream, right, si, env)
-    emit(stream, f"mov [rsp-{si}], rax")
-    compile_expr(stream, left, si + WORD_SIZE, env)
-    emit(stream, f"sub rax, [rsp-{si}]")
+def prim_binminus(compiler, left, right, stack_index, env):
+    compiler.visit_exp(right, stack_index, env)
+    compiler.emit(f"mov [rsp-{stack_index}], rax")
+    compiler.visit_exp(left, stack_index + WORD_SIZE, env)
+    compiler.emit(f"sub rax, [rsp-{stack_index}]")
 
 
-def prim_cons(stream, car, cdr, si, env):
-    compile_expr(stream, car, si, env)
-    emit(stream, f"mov [{HEAP_PTR}], rax")
-    compile_expr(stream, cdr, si, env)
-    emit(stream, f"mov [{HEAP_PTR}+{WORD_SIZE}], rax")
-    emit(stream, f"mov rax, {HEAP_PTR}")
-    emit(stream, f"or rax, {PAIR_TAG}")
-    emit(stream, f"add {HEAP_PTR}, {PAIR_SIZE}")
+def prim_cons(compiler, car, cdr, stack_index, env):
+    compiler.visit_exp(car, stack_index, env)
+    compiler.emit(f"mov [{HEAP_PTR}], rax")
+    compiler.visit_exp(cdr, stack_index, env)
+    compiler.emit(f"mov [{HEAP_PTR}+{WORD_SIZE}], rax")
+    compiler.emit(f"mov rax, {HEAP_PTR}")
+    compiler.emit(f"or rax, {PAIR_TAG}")
+    compiler.emit(f"add {HEAP_PTR}, {PAIR_SIZE}")
 
 
-def prim_car(stream, expr, si, env):
-    compile_expr(stream, expr, si, env)
-    emit(stream, f"mov rax, [rax-{PAIR_TAG}]")
+def prim_car(compiler, expr, stack_index, env):
+    compiler.visit_exp(expr, stack_index, env)
+    compiler.emit(f"mov rax, [rax-{PAIR_TAG}]")
 
 
-def prim_cdr(stream, expr, si, env):
-    compile_expr(stream, expr, si, env)
-    emit(stream, f"mov rax, [rax+{WORD_SIZE-PAIR_TAG}]")
+def prim_cdr(compiler, expr, stack_index, env):
+    compiler.visit_exp(expr, stack_index, env)
+    compiler.emit(f"mov rax, [rax+{WORD_SIZE-PAIR_TAG}]")
 
 
 PRIMITIVE_TABLE = {
@@ -179,12 +175,6 @@ PRIMITIVE_TABLE = {
 }
 
 
-def emit_primcall(stream, x, si, env):
-    op, *args = x
-    fn = PRIMITIVE_TABLE[op.value()]
-    fn(stream, *args, si, env)
-
-
 def is_let(x):
     return (
         isinstance(x, list)
@@ -192,36 +182,6 @@ def is_let(x):
         and isinstance(x[0], sexpdata.Symbol)
         and x[0].value() == "let"
     )
-
-
-def compile_let(stream, bindings, body, si, env):
-    if not bindings:
-        compile_expr(stream, body, si, env)
-        return
-    new_env = env.copy()
-    name, expr = bindings[0]
-    compile_expr(stream, expr, si, env)
-    emit(stream, f"mov [rsp-{si}], rax")
-    new_env[name.value()] = si
-    compile_let(stream, bindings[1:], body, si + WORD_SIZE, new_env)
-
-
-LABEL_COUNTER = -1
-
-
-def unique_label():
-    global LABEL_COUNTER
-    LABEL_COUNTER += 1
-    return f"L{LABEL_COUNTER}"
-
-
-def reset_labels():
-    global LABEL_COUNTER
-    LABEL_COUNTER = -1
-
-
-def emit_label(stream, label):
-    emit(stream, f"{label}:")
 
 
 def is_if(x):
@@ -233,109 +193,137 @@ def is_if(x):
     )
 
 
-def compile_if(stream, cond, consequent, alternative, si, env):
-    L0 = unique_label()
-    L1 = unique_label()
-    compile_expr(stream, cond, si, env)
-    emit(stream, f"cmp rax, {imm(False)}")
-    emit(stream, f"je {L0}")
-    compile_expr(stream, consequent, si, env)
-    emit(stream, f"jmp {L1}")
-    emit_label(stream, L0)
-    compile_expr(stream, alternative, si, env)
-    emit_label(stream, L1)
-
-
 def is_code(x):
     return isinstance(x, list) and len(x) == 3 and x[0].value() == "code"
-
-
-def compile_code(stream, formals, body, si, env):
-    new_env = env.copy()
-    body_si = 0
-    for formal in formals:
-        body_si += WORD_SIZE
-        new_env[formal.value()] = body_si
-    compile_expr(stream, body, body_si, new_env)
-    emit(stream, "ret")
 
 
 def is_labels(x):
     return isinstance(x, list) and len(x) == 3 and x[0].value() == "labels"
 
 
-def compile_labels(stream, labels, body, si, env):
-    new_env = env.copy()
-    body_label = unique_label()
-    emit(stream, f"jmp {body_label}")
-    for given_label, lexp in labels:
-        label = unique_label()
-        new_env[given_label.value()] = label
-        emit_label(stream, label)
-        compile_expr(stream, lexp, si, new_env)
-    emit_label(stream, body_label)
-    compile_expr(stream, body, si, new_env)
-
-
-def compile_labelcall(stream, lvar, args, si, env):
-    for arg in args:
-        si += WORD_SIZE
-        compile_expr(stream, arg, si, env)
-        emit(stream, f"mov [rsp-{si}], rax")
-    emit(stream, f"call {env[lvar.value()]}")
-
-
 def is_labelcall(x):
     return isinstance(x, list) and len(x) >= 2 and x[0].value() == "labelcall"
 
 
-def compile_expr(stream, x, si, env):
-    if is_immediate(x):
-        emit(stream, f"mov rax, {imm(x)}")
-        return
-    elif is_primcall(x):
-        emit_primcall(stream, x, si, env)
-        return
-    elif isinstance(x, sexpdata.Symbol):
-        offset = env[x.value()]
-        emit(stream, f"mov rax, [rsp-{offset}]")
-        return
-    elif is_let(x):
-        bindings = x[1]
-        body = x[2]
-        compile_let(stream, bindings, body, si, env)
-        return
-    elif is_if(x):
-        compile_if(stream, *x[1:], si, env)
-        return
-    elif is_labels(x):
-        compile_labels(stream, *x[1:], si, env)
-        return
-    elif is_code(x):
-        compile_code(stream, *x[1:], si, env)
-        return
-    elif is_labelcall(x):
-        compile_labelcall(stream, x[1], x[2:], si, env)
-        return
-    # TODO(emacs): Compile strings (0b011)
-    # TODO(emacs): Compile vectors (0b010)
-    # TODO(emacs): Compile symbols (0b101)
-    # TODO(emacs): Compile closures (0b110)
-    raise ValueError(x)
+class Compiler:
+    def __init__(self, stream):
+        self.stream = stream
+        self.last_label = -1
 
+    def _unique_label(self):
+        self.last_label += 1
+        return f"L{self.last_label}"
 
-def compile_program(stream, x, env=None):
-    emit(
-        stream,
-        f"""section .text
-global scheme_entry
-scheme_entry:
-mov {HEAP_PTR}, rdi""",
-    )
-    if env is None:
-        env = {}
-    compile_expr(stream, x, WORD_SIZE, env)
-    emit(stream, "ret")
+    def emit(self, text):
+        self.stream.write(f"{text}\n")
+
+    def emit_label(self, label):
+        self.emit(f"{label}:")
+
+    def visit_primcall(self, node, stack_index, env):
+        op, *args = node
+        fn = PRIMITIVE_TABLE[op.value()]
+        fn(self, *args, stack_index, env)
+
+    def visit_let(self, bindings, body, stack_index, env):
+        if not bindings:
+            self.visit_exp(body, stack_index, env)
+            return
+        new_env = env.copy()
+        name, expr = bindings[0]
+        self.visit_exp(expr, stack_index, env)
+        self.emit(f"mov [rsp-{stack_index}], rax")
+        new_env[name.value()] = stack_index
+        self.visit_let(bindings[1:], body, stack_index + WORD_SIZE, new_env)
+
+    def visit_if(self, cond, consequent, alternative, stack_index, env):
+        L0 = self._unique_label()
+        L1 = self._unique_label()
+        self.visit_exp(cond, stack_index, env)
+        self.emit(f"cmp rax, {imm(False)}")
+        self.emit(f"je {L0}")
+        self.visit_exp(consequent, stack_index, env)
+        self.emit(f"jmp {L1}")
+        self.emit_label(L0)
+        self.visit_exp(alternative, stack_index, env)
+        self.emit_label(L1)
+
+    def visit_code(self, formals, body, stack_index, env):
+        new_env = env.copy()
+        body_si = 0
+        for formal in formals:
+            body_si += WORD_SIZE
+            new_env[formal.value()] = body_si
+        self.visit_exp(body, body_si, new_env)
+        self.emit("ret")
+
+    def visit_labels(self, labels, body, stack_index, env):
+        new_env = env.copy()
+        body_label = self._unique_label()
+        self.emit(f"jmp {body_label}")
+        for given_label, lexp in labels:
+            label = self._unique_label()
+            new_env[given_label.value()] = label
+            self.emit_label(label)
+            self.visit_exp(lexp, stack_index, new_env)
+        self.emit_label(body_label)
+        self.visit_exp(body, stack_index, new_env)
+
+    def visit_labelcall(self, lvar, args, stack_index, env):
+        for arg in args:
+            stack_index += WORD_SIZE
+            self.visit_exp(arg, stack_index, env)
+            self.emit(f"mov [rsp-{stack_index}], rax")
+        self.emit(f"call {env[lvar.value()]}")
+
+    def visit_immediate(self, x):
+        self.emit(f"mov rax, {imm(x)}")
+
+    def visit_exp(self, x, stack_index, env):
+        if is_immediate(x):
+            self.visit_immediate(x)
+            return
+        elif is_primcall(x):
+            self.visit_primcall(x, stack_index, env)
+            return
+        elif isinstance(x, sexpdata.Symbol):
+            offset = env[x.value()]
+            self.emit(f"mov rax, [rsp-{offset}]")
+            return
+        elif is_let(x):
+            bindings = x[1]
+            body = x[2]
+            self.visit_let(*x[1:], stack_index, env)
+            return
+        elif is_if(x):
+            self.visit_if(*x[1:], stack_index, env)
+            return
+        elif is_labels(x):
+            self.visit_labels(*x[1:], stack_index, env)
+            return
+        elif is_code(x):
+            self.visit_code(*x[1:], stack_index, env)
+            return
+        elif is_labelcall(x):
+            self.visit_labelcall(x[1], x[2:], stack_index, env)
+            return
+        # TODO(emacs): Compile strings (0b011)
+        # TODO(emacs): Compile vectors (0b010)
+        # TODO(emacs): Compile symbols (0b101)
+        # TODO(emacs): Compile closures (0b110)
+        raise ValueError(x)
+
+    def compile_program(self, x, env=None):
+        self.emit(
+            f"""section .text
+    global scheme_entry
+    scheme_entry:
+    mov {HEAP_PTR}, rdi"""
+        )
+        if env is None:
+            env = {}
+        self.visit_exp(x, WORD_SIZE, env)
+        self.emit("ret")
 
 
 if __name__ == "__main__":
@@ -343,4 +331,5 @@ if __name__ == "__main__":
         sexp = sexpdata.load(infile, true="#t", false="#f")
 
     with open(sys.argv[2], "w") as outfile:
-        compile_program(outfile, sexp)
+        c = Compiler(outfile)
+        c.compile_program(sexp)

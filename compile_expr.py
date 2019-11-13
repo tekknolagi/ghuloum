@@ -1,19 +1,7 @@
 #!/usr/bin/env python3.6
 import sys
 import sexpdata
-from compiler import HEAP_PTR, WORD_SIZE, compile_expr, emit
-
-
-def compile_expr_stub(stream, x):
-    emit(
-        stream,
-        f"""section .text
-global scheme_entry
-scheme_entry:
-mov {HEAP_PTR}, rdi""",
-    )
-    compile_expr(stream, x, WORD_SIZE, {})
-    emit(stream, "ret")
+from compiler import HEAP_PTR, WORD_SIZE, Compiler
 
 
 if __name__ == "__main__":
@@ -21,4 +9,12 @@ if __name__ == "__main__":
         sexp = sexpdata.load(infile, true="#t", false="#f")
 
     with open(sys.argv[2], "w") as outfile:
-        compile_expr_stub(outfile, sexp)
+        c = Compiler(outfile)
+        c.emit(
+            f"""section .text
+    global scheme_entry
+    scheme_entry:
+    mov {HEAP_PTR}, rdi"""
+        )
+        c.visit_exp(sexp, WORD_SIZE, {})
+        c.emit("ret")
