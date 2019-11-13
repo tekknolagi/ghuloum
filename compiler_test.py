@@ -2,7 +2,7 @@
 import io
 import unittest
 import textwrap
-from compiler import imm, compile_expr, sexpdata
+from compiler import imm, compile_expr, sexpdata, reset_labels
 
 
 def compile_to_str(exp, si=0, env=None):
@@ -106,6 +106,7 @@ class CompilerTests(unittest.TestCase):
         )
 
     def test_compile_simple_if(self):
+        reset_labels()
         program = sexpdata.loads("(if #t 3 4)", true="#t", false="#f")
         self.assertEqual(
             compile_to_str(program),
@@ -160,6 +161,110 @@ class CompilerTests(unittest.TestCase):
                 """\
                 mov rax, 0xc
                 mov rax, [rax+7]
+                """
+            ),
+        )
+
+    def test_compile_code(self):
+        self.assertEqual(
+            compile_to_str(
+                sexpdata.loads(
+                    """
+                (code (x y) (+ x y))
+            """
+                )
+            ),
+            textwrap.dedent(
+                """\
+                mov rax, [rsp-16]
+                mov [rsp-16], rax
+                mov rax, [rsp-8]
+                add rax, [rsp-16]
+                ret
+                """
+            ),
+        )
+
+    def test_compile_labels(self):
+        reset_labels()
+        self.assertEqual(
+            compile_to_str(
+                sexpdata.loads(
+                    """
+                (labels ((x (code () 5))) 10)
+            """
+                )
+            ),
+            textwrap.dedent(
+                """\
+                jmp L0
+                L1:
+                mov rax, 0x14
+                ret
+                L0:
+                mov rax, 0x28
+                """
+            ),
+        )
+
+    def test_compile_labelcall(self):
+        reset_labels()
+        self.assertEqual(
+            compile_to_str(sexpdata.loads("(labelcall x 1 2 3)"), env={"x": "L123"}),
+            textwrap.dedent(
+                """\
+               mov rax, 0x4
+               mov [rsp-8], rax
+               mov rax, 0x8
+               mov [rsp-16], rax
+               mov rax, 0xc
+               mov [rsp-24], rax
+               call L123
+               """
+            ),
+        )
+
+    def test_compile_labelcall_id(self):
+        reset_labels()
+        self.assertEqual(
+            compile_to_str(
+                sexpdata.loads(
+                    """\
+(labels (
+    (x (code (y) y))
+  )
+  (labelcall x 5)
+)"""
+                )
+            ),
+            textwrap.dedent(
+                """\
+                jmp L0
+                L1:
+                mov rax, [rsp-8]
+                ret
+                L0:
+                mov rax, 0x14
+                mov [rsp-8], rax
+                call L1
+               """
+            ),
+        )
+
+    def test_compile_empty_labels(self):
+        reset_labels()
+        program = sexpdata.loads(
+            """
+        (labels () 4)
+        """
+        )
+        self.assertEqual(
+            compile_to_str(program),
+            textwrap.dedent(
+                """\
+                jmp L0
+                L0:
+                mov rax, 0x10
                 """
             ),
         )

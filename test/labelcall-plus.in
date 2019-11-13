@@ -1,0 +1,6 @@
+(labels (
+    (add
+        (code (x y) (+ x y)))
+  )
+  (labelcall add 3 4)
+)

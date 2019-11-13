@@ -215,6 +215,11 @@ def unique_label():
     return f"L{LABEL_COUNTER}"
 
 
+def reset_labels():
+    global LABEL_COUNTER
+    LABEL_COUNTER = -1
+
+
 def emit_label(stream, label):
     emit(stream, f"{label}:")
 
@@ -241,6 +246,49 @@ def compile_if(stream, cond, consequent, alternative, si, env):
     emit_label(stream, L1)
 
 
+def is_code(x):
+    return isinstance(x, list) and len(x) == 3 and x[0].value() == "code"
+
+
+def compile_code(stream, formals, body, si, env):
+    new_env = env.copy()
+    body_si = 0
+    for formal in formals:
+        body_si += WORD_SIZE
+        new_env[formal.value()] = body_si
+    compile_expr(stream, body, body_si, new_env)
+    emit(stream, "ret")
+
+
+def is_labels(x):
+    return isinstance(x, list) and len(x) == 3 and x[0].value() == "labels"
+
+
+def compile_labels(stream, labels, body, si, env):
+    new_env = env.copy()
+    body_label = unique_label()
+    emit(stream, f"jmp {body_label}")
+    for given_label, lexp in labels:
+        label = unique_label()
+        new_env[given_label.value()] = label
+        emit_label(stream, label)
+        compile_expr(stream, lexp, si, new_env)
+    emit_label(stream, body_label)
+    compile_expr(stream, body, si, new_env)
+
+
+def compile_labelcall(stream, lvar, args, si, env):
+    for arg in args:
+        si += WORD_SIZE
+        compile_expr(stream, arg, si, env)
+        emit(stream, f"mov [rsp-{si}], rax")
+    emit(stream, f"call {env[lvar.value()]}")
+
+
+def is_labelcall(x):
+    return isinstance(x, list) and len(x) >= 2 and x[0].value() == "labelcall"
+
+
 def compile_expr(stream, x, si, env):
     if is_immediate(x):
         emit(stream, f"mov rax, {imm(x)}")
@@ -259,6 +307,15 @@ def compile_expr(stream, x, si, env):
         return
     elif is_if(x):
         compile_if(stream, *x[1:], si, env)
+        return
+    elif is_labels(x):
+        compile_labels(stream, *x[1:], si, env)
+        return
+    elif is_code(x):
+        compile_code(stream, *x[1:], si, env)
+        return
+    elif is_labelcall(x):
+        compile_labelcall(stream, x[1], x[2:], si, env)
         return
     # TODO(emacs): Compile strings (0b011)
     # TODO(emacs): Compile vectors (0b010)
