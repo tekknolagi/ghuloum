@@ -137,6 +137,15 @@ def prim_binminus(compiler, left, right, stack_index, env):
     compiler.emit(f"sub rax, [rsp-{stack_index}]")
 
 
+def prim_binmul(compiler, left, right, stack_index, env):
+    compiler.visit_exp(right, stack_index, env)
+    compiler.emit(f"mov [rsp-{stack_index}], rax")
+    compiler.visit_exp(left, stack_index + WORD_SIZE, env)
+    # can't just multiply encoded ints due to tag
+    compiler.emit(f"shr qword [rsp-{stack_index}], {FIXNUM_SHIFT}")
+    compiler.emit(f"mul qword [rsp-{stack_index}]")
+
+
 def prim_cons(compiler, car, cdr, stack_index, env):
     compiler.visit_exp(car, stack_index, env)
     compiler.emit(f"mov [{HEAP_PTR}], rax")
@@ -169,6 +178,7 @@ PRIMITIVE_TABLE = {
     "boolean?": prim_booleanp,
     "+": prim_binplus,
     "-": prim_binminus,
+    "*": prim_binmul,
     "cons": prim_cons,
     "car": prim_car,
     "cdr": prim_cdr,

@@ -74,6 +74,27 @@ class CompilerTests(unittest.TestCase):
             ),
         )
 
+    def test_compile_mul(self):
+        program = sexpdata.loads("(* (+ 1 2) (+ 3 4))")
+        self.assertEqual(
+            compile_to_str(program),
+            textwrap.dedent(
+                """\
+                mov rax, 0x10
+                mov [rsp-0], rax
+                mov rax, 0xc
+                add rax, [rsp-0]
+                mov [rsp-0], rax
+                mov rax, 0x8
+                mov [rsp-8], rax
+                mov rax, 0x4
+                add rax, [rsp-8]
+                shr qword [rsp-0], 2
+                mul qword [rsp-0]
+                """
+            ),
+        )
+
     def test_compile_var_loads_from_offset(self):
         self.assertEqual(
             compile_to_str(sexpdata.Symbol("foo"), 8, {"foo": 4}), "mov rax, [rsp-4]\n"
