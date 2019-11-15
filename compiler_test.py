@@ -229,9 +229,9 @@ class CompilerTests(unittest.TestCase):
             ),
             textwrap.dedent(
                 """\
-                mov rax, [rsp-16]
+                mov rax, rdx
                 mov [rsp-16], rax
-                mov rax, [rsp-8]
+                mov rax, rdi
                 add rax, [rsp-16]
                 ret
                 """
@@ -264,13 +264,19 @@ class CompilerTests(unittest.TestCase):
             compile_to_str(sexpdata.loads("(labelcall x 1 2 3)"), env={"x": "L123"}),
             textwrap.dedent(
                 """\
+               push rdi
+               push rdx
+               push rcx
                mov rax, 0x4
-               mov [rsp-8], rax
+               mov rdi, rax
                mov rax, 0x8
-               mov [rsp-16], rax
+               mov rdx, rax
                mov rax, 0xc
-               mov [rsp-24], rax
+               mov rcx, rax
                call L123
+               pop rcx
+               pop rdx
+               pop rdi
                """
             ),
         )
@@ -291,12 +297,14 @@ class CompilerTests(unittest.TestCase):
                 """\
                 jmp L0
                 L1:
-                mov rax, [rsp-8]
+                mov rax, rdi
                 ret
                 L0:
+                push rdi
                 mov rax, 0x14
-                mov [rsp-8], rax
+                mov rdi, rax
                 call L1
+                pop rdi
                """
             ),
         )

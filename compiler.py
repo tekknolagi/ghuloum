@@ -19,6 +19,7 @@ PAIR_TAG = 0b1
 WORD_SIZE = 8
 PAIR_SIZE = WORD_SIZE * 2
 HEAP_PTR = "rsi"
+PARAM_REGISTERS = ("rdi", "rdx", "rcx", "r8", "r9")
 
 
 def is_immediate(x):
@@ -259,11 +260,14 @@ class Compiler:
         self.emit_label(L1)
 
     def visit_code(self, formals, body, stack_index, env):
+        if len(formals) > len(PARAM_REGISTERS):
+            raise TypeError("too many formals")
         new_env = env.copy()
         body_si = 0
-        for formal in formals:
+        for idx, formal in enumerate(formals):
             body_si += WORD_SIZE
-            new_env[formal.value()] = body_si
+            # new_env[formal.value()] = body_si
+            new_env[formal.value()] = PARAM_REGISTERS[idx]
         self.visit_exp(body, body_si, new_env)
         self.emit("ret")
 
@@ -280,11 +284,18 @@ class Compiler:
         self.visit_exp(body, stack_index, new_env)
 
     def visit_labelcall(self, lvar, args, stack_index, env):
-        for arg in args:
+        if len(args) > len(PARAM_REGISTERS):
+            raise TypeError("too many args")
+        for idx, _ in enumerate(args):
+            self.emit(f"push {PARAM_REGISTERS[idx]}")
+        for idx, arg in enumerate(args):
             stack_index += WORD_SIZE
             self.visit_exp(arg, stack_index, env)
-            self.emit(f"mov [rsp-{stack_index}], rax")
+            # self.emit(f"mov [rsp-{stack_index}], rax")
+            self.emit(f"mov {PARAM_REGISTERS[idx]}, rax")
         self.emit(f"call {env[lvar.value()]}")
+        for idx in reversed(range(len(args))):
+            self.emit(f"pop {PARAM_REGISTERS[idx]}")
 
     def visit_immediate(self, x):
         self.emit(f"mov rax, {imm(x)}")
@@ -298,7 +309,10 @@ class Compiler:
             return
         elif isinstance(x, sexpdata.Symbol):
             offset = env[x.value()]
-            self.emit(f"mov rax, [rsp-{offset}]")
+            if isinstance(offset, str):
+                self.emit(f"mov rax, {offset}")
+            else:
+                self.emit(f"mov rax, [rsp-{offset}]")
             return
         elif is_let(x):
             bindings = x[1]
@@ -328,6 +342,8 @@ class Compiler:
             f"""section .text
     global scheme_entry
     scheme_entry:
+    ; {HEAP_PTR} is not used as a parameter register in calling convention
+    ; since it is reserved for a pointer to the heap
     mov {HEAP_PTR}, rdi"""
         )
         if env is None:
