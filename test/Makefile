@@ -1,9 +1,9 @@
 all:
 	@./run_tests.sh
 
-build/%.s: %.in ../compiler.py ../compile_expr.py
+build/%.s: %.in ../compiler.py
 	echo "Running test" $*"..."
-	python3 ../compile_expr.py $< $@
+	python3 ../compiler.py $< $@
 
 build/%.o: %.c
 	gcc -c $< -o $@
@@ -18,4 +18,4 @@ build/%.out: build/%.o build/test_driver.o
 	./$< > build/$*.output
 	diff build/$*.output $*.expected
 
-.PRECIOUS: build/%.o build/%.out
+.PRECIOUS: build/%.o build/%.out build/%.s

@@ -339,12 +339,12 @@ class Compiler:
 
     def compile_program(self, x, env=None):
         self.emit(
-            f"""section .text
-    global scheme_entry
-    scheme_entry:
-    ; {HEAP_PTR} is not used as a parameter register in calling convention
-    ; since it is reserved for a pointer to the heap
-    mov {HEAP_PTR}, rdi"""
+f"""section .text
+global scheme_entry
+scheme_entry:
+; {HEAP_PTR} is not used as a parameter register in calling convention
+; since it is reserved for a pointer to the heap
+mov {HEAP_PTR}, rdi"""
         )
         if env is None:
             env = {}
