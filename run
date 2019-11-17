@@ -1,6 +1,6 @@
 #!/usr/bin/zsh
 
-python compiler.py $1.scm $1.s
-nasm -f elf64 $1.s -o $1.o
-gcc $1.o ./test/test_driver.c -o a.elf
-./a.elf $*
+python compiler.py $1 a.s
+nasm -f elf64 a.s -o a.o
+gcc a.o ./test/test_driver.c -o a.elf
+./a.elf

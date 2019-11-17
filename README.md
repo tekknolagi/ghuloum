@@ -10,7 +10,7 @@ Run tests:
 $ make
 ```
 
-Run a specific .scm file:
+Run a specific source file:
 ```sh
-./run factorial  # without the .scm extension
+./run tests/factorial.in
 ```
