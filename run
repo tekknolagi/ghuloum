@@ -1,4 +1,4 @@
-#!/usr/bin/zsh
+#!/bin/sh
 
 python compiler.py $1 test/build/a.s
 nasm -f elf64 test/build/a.s -o test/build/a.o
