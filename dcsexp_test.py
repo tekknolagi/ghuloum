@@ -6,15 +6,13 @@ import unittest
 
 class Tests(unittest.TestCase):
     def test_nil(self):
-        self.assertEqual(string_of_dcsexp([]), "Z0:")
+        self.assertEqual(string_of_dcsexp([]), "Z")
 
     def test_one_element_list(self):
-        self.assertEqual(string_of_dcsexp([5]), ".N1:5Z0:")
+        self.assertEqual(string_of_dcsexp([5]), ".N1:5Z")
 
     def test_multi_element_list(self):
-        self.assertEqual(
-            string_of_dcsexp([1, 2, Symbol("foo")]), ".N1:1.N1:2.Y3:fooZ0:"
-        )
+        self.assertEqual(string_of_dcsexp([1, 2, Symbol("foo")]), ".N1:1.N1:2.Y3:fooZ")
 
     def test_empty_symbol(self):
         self.assertEqual(string_of_dcsexp(Symbol("")), "Y0:")
@@ -29,10 +27,10 @@ class Tests(unittest.TestCase):
         self.assertEqual(string_of_dcsexp(-5), "N2:-5")
 
     def test_true(self):
-        self.assertEqual(string_of_dcsexp(True), "B1:t")
+        self.assertEqual(string_of_dcsexp(True), "T")
 
     def test_false(self):
-        self.assertEqual(string_of_dcsexp(False), "B1:f")
+        self.assertEqual(string_of_dcsexp(False), "F")
 
     def test_string(self):
         self.assertEqual(string_of_dcsexp(String("foo")), "S3:foo")

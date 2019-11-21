@@ -8,7 +8,7 @@ import sys
 def to_dcsexp(stream, sexp):
     if isinstance(sexp, list):
         if not sexp:
-            stream.write("Z0:")  # nil
+            stream.write("Z")  # nil
             return
         stream.write(".")
         to_dcsexp(stream, sexp[0])
@@ -22,8 +22,11 @@ def to_dcsexp(stream, sexp):
         value = sexp.value()
         stream.write(f"S{len(value)}:{value}")
         return
-    if isinstance(sexp, bool):
-        stream.write(f"B1:{'t' if sexp else 'f'}")
+    if sexp is True:
+        stream.write("T")
+        return
+    if sexp is False:
+        stream.write("F")
         return
     if isinstance(sexp, int):
         length = len(str(sexp))
