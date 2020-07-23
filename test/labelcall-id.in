@@ -1,5 +1,6 @@
 (labels (
     (x (code (y) y))
   )
-  (labelcall x 5)
+  (let ((y 5))
+  (labelcall x y))
 )
