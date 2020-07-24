@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 
 #include "libtap/tap.h"
@@ -51,55 +52,140 @@ void BufferWriter_init(BufferWriter *writer, Buffer *buf) {
 }
 
 void Buffer_write8(BufferWriter *writer, byte b) {
+  assert(writer->pos < writer->buf->len);
   Buffer_at_put(writer->buf, writer->pos++, b);
+}
+
+void Buffer_write_arr(BufferWriter *writer, byte *arr, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    Buffer_write8(writer, arr[i]);
+  }
 }
 
 // Testing
 
-Buffer *executable_from_bytes(byte *bytes, size_t len) {
-  assert(bytes != NULL);
-  Buffer *buf = malloc(sizeof *buf);
-  assert(buf != NULL);
-  Buffer_init(buf, len);
-  BufferWriter writer;
-  BufferWriter_init(&writer, buf);
-  for (size_t i = 0; i < len; i++) {
-    Buffer_write8(&writer, bytes[i]);
-  }
-  Buffer_make_executable(buf);
-  return buf;
-}
-
-void Buffer_free(Buffer *buf) {
-  assert(buf != NULL);
-  Buffer_deinit(buf);
-  free(buf);
-}
-
-int expect_function_returns(Buffer *buf, int expected) {
+int call_intfunction(Buffer *buf) {
   assert(buf != NULL);
   assert(buf->address != NULL);
   assert(buf->state == kExecutable);
   int (*function)() = (int (*)())buf->address;
-  return function() == expected;
+  return function();
+}
+
+typedef enum {
+  kRax = 0,
+  kRcx,
+  kRdx,
+  kRbx,
+  kRsp,
+  kRbp,
+  kRsi,
+  kRdi,
+} Register;
+
+void Buffer_inc_reg(BufferWriter *writer, Register reg) {
+  Buffer_write8(writer, 0xff);
+  Buffer_write8(writer, 0xc0 + reg);
+}
+
+void Buffer_dec_reg(BufferWriter *writer, Register reg) {
+  Buffer_write8(writer, 0xff);
+  Buffer_write8(writer, 0xc8 + reg);
+}
+
+const int kBitsPerByte = 8;
+
+void Buffer_mov_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
+  Buffer_write8(writer, 0xb8 + dst);
+  for (size_t i = 0; i < 4; i++) {
+    Buffer_write8(writer, (src >> (i * kBitsPerByte)) & 0xff);
+  }
+}
+
+void Buffer_mov_reg_imm64(BufferWriter *writer, Register dst, int64_t src) {
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0xb8 + dst);
+  for (size_t i = 0; i < 8; i++) {
+    Buffer_write8(writer, (src >> (i * kBitsPerByte)) & 0xff);
+  }
+  Buffer_write8(writer, 0x00);
+  Buffer_write8(writer, 0x00);
+  Buffer_write8(writer, 0x00);
+}
+
+void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
+
+// Opcode		Encoding
+// ======		========
+// mov rax, rax		89 c0
+// mov rax, rcx		89 c8
+// mov rax, rdx		89 d0
+// mov rax, rbx		89 d8
+// mov rax, rsp		89 r0
+// mov rax, rbp		89 r8
+// mov rax, rsi		89 f0
+// mov rax, rdi		89 f8
+// mov rcx, rax		89 c1
+// mov rcx, rcx		89 c9
+
+void run_test(void (*test_body)(BufferWriter *)) {
+  Buffer buf;
+  Buffer_init(&buf, 100);
+  {
+    BufferWriter writer;
+    BufferWriter_init(&writer, &buf);
+    test_body(&writer);
+  }
+  Buffer_deinit(&buf);
+}
+
+#define EXPECT_EQUALS_BYTES(buf, arr)                                          \
+  cmp_ok(0, "==", memcmp(buf->address, arr, sizeof arr), __func__)
+
+#define EXPECT_CALL_EQUALS(buf, expected)                                      \
+  cmp_ok(expected, "==", call_intfunction(buf), __func__)
+
+void test_write_bytes_manually(BufferWriter *writer) {
+  byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
+  Buffer_write_arr(writer, arr, sizeof arr);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 42);
+}
+
+void test_write_bytes_manually2(BufferWriter *writer) {
+  byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xff, 0xc0, 0xc3};
+  Buffer_write_arr(writer, arr, sizeof arr);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 43);
+}
+
+void test_mov_rax_imm32(BufferWriter *writer) {
+  Buffer_mov_reg_imm32(writer, kRax, 42);
+  byte expected[] = {0xb8, 0x2a, 0x00, 0x00, 0x00};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+}
+
+void test_mov_rcx_imm32(BufferWriter *writer) {
+  Buffer_mov_reg_imm32(writer, kRcx, 42);
+  byte expected[] = {0xb9, 0x2a, 0x00, 0x00, 0x00};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+}
+
+void test_mov_inc(BufferWriter *writer) {
+  Buffer_mov_reg_imm32(writer, kRax, 42);
+  Buffer_inc_reg(writer, kRax);
+  Buffer_ret(writer);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 43);
 }
 
 int run_tests() {
   plan(NO_PLAN);
-  {
-    // mov eax, 0x2a; ret
-    byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
-    Buffer *buf = executable_from_bytes(arr, sizeof arr);
-    ok(expect_function_returns(buf, 42), "function returns 42");
-    Buffer_free(buf);
-  }
-  {
-    // mov eax, 0xff; ret
-    byte arr[] = {0xb8, 0xff, 0x00, 0x00, 0x00, 0xc3};
-    Buffer *buf = executable_from_bytes(arr, sizeof arr);
-    ok(expect_function_returns(buf, 255), "function returns 255");
-    Buffer_free(buf);
-  }
+  run_test(test_write_bytes_manually);
+  run_test(test_write_bytes_manually2);
+  run_test(test_mov_rax_imm32);
+  run_test(test_mov_rcx_imm32);
+  run_test(test_mov_inc);
   done_testing();
 }
 
