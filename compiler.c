@@ -1,10 +1,15 @@
+#define _GNU_SOURCE
 #include <assert.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#undef _GNU_SOURCE
 
 #include "libtap/tap.h"
+
+// Machine code
 
 typedef unsigned char byte;
 
@@ -111,6 +116,45 @@ void Buffer_mov_reg_reg(BufferWriter *writer, Register dst, Register src) {
 
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
 
+// End Machine code
+
+// AST
+
+typedef enum {
+  kFixnum,
+} ASTNodeType;
+
+typedef struct {
+  ASTNodeType type;
+  union {
+    int fixnum;
+  } value;
+} ASTNode;
+
+ASTNode *AST_new_fixnum(int fixnum) {
+  ASTNode *result = malloc(sizeof *result);
+  result->type = kFixnum;
+  result->value.fixnum = fixnum;
+  return result;
+}
+
+static const int kFixnumShift = 2;
+
+int AST_compile(ASTNode *node, BufferWriter *writer) {
+  switch (node->type) {
+  case kFixnum: {
+    uint32_t value = (uint32_t)node->value.fixnum;
+    uint32_t encoded = value << kFixnumShift;
+    Buffer_mov_reg_imm32(writer, kRax, encoded);
+    break;
+  }
+  }
+  Buffer_ret(writer);
+  return 0;
+}
+
+// End AST
+
 // Testing
 
 int call_intfunction(Buffer *buf) {
@@ -192,6 +236,17 @@ TEST(mov_rdi_rbp) {
   EXPECT_EQUALS_BYTES(writer->buf, expected);
 }
 
+TEST(compile_fixnum) {
+  ASTNode *node = AST_new_fixnum(123);
+  int result = AST_compile(node, writer);
+  cmp_ok(result, "==", 0, __func__);
+  byte expected[] = {0xb8, 0xec, 0x01, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 123 << kFixnumShift);
+  free(node);
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -202,6 +257,7 @@ int run_tests() {
   run_test(test_mov_rax_rax);
   run_test(test_mov_rax_rsi);
   run_test(test_mov_rdi_rbp);
+  run_test(test_compile_fixnum);
   done_testing();
 }
 
