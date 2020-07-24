@@ -1,5 +1,8 @@
-all: main
+all: main compiler
 	./main
+
+compiler: compiler.c libtap/tap.h libtap/tap.c
+	gcc -Wall -Wextra -pedantic -O2 -g compiler.c libtap/tap.c -o compiler
 
 entry.s: compiler.py
 	python3 compiler.py

@@ -62,16 +62,6 @@ void Buffer_write_arr(BufferWriter *writer, byte *arr, size_t len) {
   }
 }
 
-// Testing
-
-int call_intfunction(Buffer *buf) {
-  assert(buf != NULL);
-  assert(buf->address != NULL);
-  assert(buf->state == kExecutable);
-  int (*function)() = (int (*)())buf->address;
-  return function();
-}
-
 typedef enum {
   kRax = 0,
   kRcx,
@@ -113,20 +103,36 @@ void Buffer_mov_reg_imm64(BufferWriter *writer, Register dst, int64_t src) {
   Buffer_write8(writer, 0x00);
 }
 
+void Buffer_mov_reg_reg(BufferWriter *writer, Register dst, Register src) {
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0x89);
+  Buffer_write8(writer, 0xc0 + dst + src * 8);
+}
+
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
 
 // Opcode		Encoding
 // ======		========
-// mov rax, rax		89 c0
-// mov rax, rcx		89 c8
-// mov rax, rdx		89 d0
-// mov rax, rbx		89 d8
-// mov rax, rsp		89 r0
-// mov rax, rbp		89 r8
-// mov rax, rsi		89 f0
-// mov rax, rdi		89 f8
-// mov rcx, rax		89 c1
-// mov rcx, rcx		89 c9
+// mov rax, rax		48 89 c0
+// mov rax, rcx		48 89 c8
+// mov rax, rdx		48 89 d0
+// mov rax, rbx		48 89 d8
+// mov rax, rsp		48 89 r0
+// mov rax, rbp		48 89 r8
+// mov rax, rsi		48 89 f0
+// mov rax, rdi		48 89 f8
+// mov rcx, rax		48 89 c1
+// mov rcx, rcx		48 89 c9
+
+// Testing
+
+int call_intfunction(Buffer *buf) {
+  assert(buf != NULL);
+  assert(buf->address != NULL);
+  assert(buf->state == kExecutable);
+  int (*function)() = (int (*)())buf->address;
+  return function();
+}
 
 void run_test(void (*test_body)(BufferWriter *)) {
   Buffer buf;
@@ -145,38 +151,58 @@ void run_test(void (*test_body)(BufferWriter *)) {
 #define EXPECT_CALL_EQUALS(buf, expected)                                      \
   cmp_ok(expected, "==", call_intfunction(buf), __func__)
 
-void test_write_bytes_manually(BufferWriter *writer) {
+#define TEST(name) static void test_##name(BufferWriter *writer)
+
+TEST(write_bytes_manually) {
   byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
   Buffer_write_arr(writer, arr, sizeof arr);
   Buffer_make_executable(writer->buf);
   EXPECT_CALL_EQUALS(writer->buf, 42);
 }
 
-void test_write_bytes_manually2(BufferWriter *writer) {
+TEST(write_bytes_manually2) {
   byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xff, 0xc0, 0xc3};
   Buffer_write_arr(writer, arr, sizeof arr);
   Buffer_make_executable(writer->buf);
   EXPECT_CALL_EQUALS(writer->buf, 43);
 }
 
-void test_mov_rax_imm32(BufferWriter *writer) {
+TEST(mov_rax_imm32) {
   Buffer_mov_reg_imm32(writer, kRax, 42);
   byte expected[] = {0xb8, 0x2a, 0x00, 0x00, 0x00};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
 }
 
-void test_mov_rcx_imm32(BufferWriter *writer) {
+TEST(mov_rcx_imm32) {
   Buffer_mov_reg_imm32(writer, kRcx, 42);
   byte expected[] = {0xb9, 0x2a, 0x00, 0x00, 0x00};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
 }
 
-void test_mov_inc(BufferWriter *writer) {
+TEST(mov_inc) {
   Buffer_mov_reg_imm32(writer, kRax, 42);
   Buffer_inc_reg(writer, kRax);
   Buffer_ret(writer);
   Buffer_make_executable(writer->buf);
   EXPECT_CALL_EQUALS(writer->buf, 43);
+}
+
+TEST(mov_rax_rax) {
+  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRax);
+  byte expected[] = {0x48, 0x89, 0xc0};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+}
+
+TEST(mov_rax_rsi) {
+  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRsi);
+  byte expected[] = {0x48, 0x89, 0xf0};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+}
+
+TEST(mov_rdi_rbp) {
+  Buffer_mov_reg_reg(writer, /*dst=*/kRdi, /*src=*/kRbp);
+  byte expected[] = {0x48, 0x89, 0xef};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
 }
 
 int run_tests() {
@@ -186,6 +212,9 @@ int run_tests() {
   run_test(test_mov_rax_imm32);
   run_test(test_mov_rcx_imm32);
   run_test(test_mov_inc);
+  run_test(test_mov_rax_rax);
+  run_test(test_mov_rax_rsi);
+  run_test(test_mov_rdi_rbp);
   done_testing();
 }
 
