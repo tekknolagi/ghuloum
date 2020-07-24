@@ -1,5 +1,5 @@
-all: main compiler
-	./main
+all: compiler
+	./compiler
 
 compiler: compiler.c libtap/tap.h libtap/tap.c
 	gcc -Wall -Wextra -pedantic -O2 -g compiler.c libtap/tap.c -o compiler
