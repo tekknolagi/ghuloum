@@ -111,19 +111,6 @@ void Buffer_mov_reg_reg(BufferWriter *writer, Register dst, Register src) {
 
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
 
-// Opcode		Encoding
-// ======		========
-// mov rax, rax		48 89 c0
-// mov rax, rcx		48 89 c8
-// mov rax, rdx		48 89 d0
-// mov rax, rbx		48 89 d8
-// mov rax, rsp		48 89 r0
-// mov rax, rbp		48 89 r8
-// mov rax, rsi		48 89 f0
-// mov rax, rdi		48 89 f8
-// mov rcx, rax		48 89 c1
-// mov rcx, rcx		48 89 c9
-
 // Testing
 
 int call_intfunction(Buffer *buf) {
