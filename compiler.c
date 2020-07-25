@@ -508,6 +508,35 @@ TEST(compile_add_three_ints) {
   // TODO: figure out how to collect ASTs
 }
 
+TEST(compile_add_four_ints) {
+  // (+ (+ 1 2) (+ 3 4))
+  ASTNode *node = make_add(make_add(AST_new_fixnum(1), AST_new_fixnum(2)),
+                           make_add(AST_new_fixnum(3), AST_new_fixnum(4)));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // 0:  b8 10 00 00 00          mov    eax,0x10
+  // 5:  48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // a:  b8 0c 00 00 00          mov    eax,0xc
+  // f:  48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 14: 48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // 19: b8 08 00 00 00          mov    eax,0x8
+  // 1e: 48 89 44 24 f0          mov    QWORD PTR [rsp-0x10],rax
+  // 23: b8 04 00 00 00          mov    eax,0x4
+  // 28: 48 03 44 24 f0          add    rax,QWORD PTR [rsp-0x10]
+  // 2d: 48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 32: c3                      ret
+  byte expected[] = {0xb8, 0x10, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24,
+                     0xf8, 0xb8, 0x0c, 0x00, 0x00, 0x00, 0x48, 0x03, 0x44,
+                     0x24, 0xf8, 0x48, 0x89, 0x44, 0x24, 0xf8, 0xb8, 0x08,
+                     0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0xf0, 0xb8,
+                     0x04, 0x00, 0x00, 0x00, 0x48, 0x03, 0x44, 0x24, 0xf0,
+                     0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 10 << kFixnumShift);
+  // TODO: figure out how to collect ASTs
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -525,6 +554,7 @@ int run_tests() {
   run_test(test_compile_primcall_sub1_add1);
   run_test(test_compile_add_two_ints);
   run_test(test_compile_add_three_ints);
+  run_test(test_compile_add_four_ints);
   done_testing();
 }
 
