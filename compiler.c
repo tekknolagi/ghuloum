@@ -56,6 +56,13 @@ void BufferWriter_init(BufferWriter *writer, Buffer *buf) {
   writer->pos = 0;
 }
 
+void Buffer_dump(BufferWriter *writer, FILE *fp) {
+  for (size_t i = 0; i < writer->pos; i++) {
+    fprintf(fp, "%.2x ", writer->buf->address[i]);
+  }
+  fprintf(fp, "\n");
+}
+
 void Buffer_write8(BufferWriter *writer, byte b) {
   assert(writer->pos < writer->buf->len);
   Buffer_at_put(writer->buf, writer->pos++, b);
@@ -67,7 +74,8 @@ void Buffer_write_arr(BufferWriter *writer, byte *arr, size_t len) {
   }
 }
 
-const int kBitsPerByte = 8;
+const int kBitsPerByte = 8; // bits
+const int kWordSize = 8;    // bytes
 
 void Buffer_write32(BufferWriter *writer, int32_t value) {
   for (size_t i = 0; i < 4; i++) {
@@ -115,6 +123,15 @@ void Buffer_add_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
   Buffer_write32(writer, src);
 }
 
+void Buffer_add_reg_stack(BufferWriter *writer, Register dst, int8_t offset) {
+  assert(offset < 0 && "positive stack offset unimplemented");
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0x03);
+  Buffer_write8(writer, 0x04 + (dst * 8) + (offset == 0 ? 0 : 0x40));
+  Buffer_write8(writer, 0x24);
+  Buffer_write8(writer, 0x100 + offset);
+}
+
 void Buffer_sub_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
   if (dst == kRax) {
     // Optimization: sub eax, {imm32} can either be encoded as 2d {imm32} or 81
@@ -142,6 +159,16 @@ void Buffer_mov_reg_reg(BufferWriter *writer, Register dst, Register src) {
   Buffer_write8(writer, 0x48);
   Buffer_write8(writer, 0x89);
   Buffer_write8(writer, 0xc0 + dst + src * 8);
+}
+
+void Buffer_mov_reg_to_stack(BufferWriter *writer, Register src,
+                             int8_t offset) {
+  assert(offset < 0 && "positive stack offset unimplemented");
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0x89);
+  Buffer_write8(writer, 0x04 + (src * 8) + (offset == 0 ? 0 : 0x40));
+  Buffer_write8(writer, 0x24);
+  Buffer_write8(writer, 0x100 + offset);
 }
 
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
@@ -212,21 +239,30 @@ ASTNode *AST_cdr(ASTNode *cons) {
 
 static const int kFixnumShift = 2;
 
-int AST_compile_expr(BufferWriter *writer, ASTNode *node);
+int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index);
 
-int AST_compile_call(BufferWriter *writer, ASTNode *car, ASTNode *cdr) {
-  if (AST_is_atom(car)) {
+ASTNode *operand1(ASTNode *args) { return AST_car(args); }
+ASTNode *operand2(ASTNode *args) { return AST_car(AST_cdr(args)); }
+
+int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
+                     int stack_index) {
+  if (AST_is_atom(fnexpr)) {
     // Assumed to be a primcall
-    if (AST_atom_equals_cstr(car, "add1")) {
-      ASTNode *arg1 = AST_car(cdr);
-      AST_compile_expr(writer, arg1);
+    if (AST_atom_equals_cstr(fnexpr, "add1")) {
+      AST_compile_expr(writer, operand1(args), stack_index);
       Buffer_add_reg_imm32(writer, kRax, 1 << kFixnumShift);
       return 0;
     }
-    if (AST_atom_equals_cstr(car, "sub1")) {
-      ASTNode *arg1 = AST_car(cdr);
-      AST_compile_expr(writer, arg1);
+    if (AST_atom_equals_cstr(fnexpr, "sub1")) {
+      AST_compile_expr(writer, operand1(args), stack_index);
       Buffer_sub_reg_imm32(writer, kRax, 1 << kFixnumShift);
+      return 0;
+    }
+    if (AST_atom_equals_cstr(fnexpr, "+")) {
+      AST_compile_expr(writer, operand2(args), stack_index);
+      Buffer_mov_reg_to_stack(writer, kRax, /*offset=*/stack_index);
+      AST_compile_expr(writer, operand1(args), stack_index - kWordSize);
+      Buffer_add_reg_stack(writer, kRax, /*offset=*/stack_index);
       return 0;
     }
     assert(0 && "unknown call");
@@ -234,7 +270,7 @@ int AST_compile_call(BufferWriter *writer, ASTNode *car, ASTNode *cdr) {
   assert(0 && "unknown call");
 }
 
-int AST_compile_expr(BufferWriter *writer, ASTNode *node) {
+int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index) {
   switch (node->type) {
   case kFixnum: {
     uint32_t value = (uint32_t)node->value.fixnum;
@@ -244,7 +280,7 @@ int AST_compile_expr(BufferWriter *writer, ASTNode *node) {
   }
   case kCons: {
     // Assumed to be in the form (<expr> <op1> <op2> ...)
-    return AST_compile_call(writer, AST_car(node), AST_cdr(node));
+    return AST_compile_call(writer, AST_car(node), AST_cdr(node), stack_index);
   }
   case kAtom:
     assert(0 && "unimplemented");
@@ -253,7 +289,7 @@ int AST_compile_expr(BufferWriter *writer, ASTNode *node) {
 }
 
 int AST_compile_function(BufferWriter *writer, ASTNode *node) {
-  int result = AST_compile_expr(writer, node);
+  int result = AST_compile_expr(writer, node, -kWordSize);
   if (result != 0)
     return result;
   Buffer_ret(writer);
@@ -428,6 +464,50 @@ TEST(compile_primcall_sub1_add1) {
   // TODO: figure out how to collect ASTs
 }
 
+ASTNode *make_add(ASTNode *left, ASTNode *right) {
+  return AST_new_cons(AST_new_atom("+"),
+                      AST_new_cons(left, AST_new_cons(right, NULL)));
+}
+
+TEST(compile_add_two_ints) {
+  // (+ 1 2)
+  ASTNode *node = make_add(AST_new_fixnum(1), AST_new_fixnum(2));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // mov eax, imm(2); mov [rsp-8], rax; mov rax, imm(1); add rax, [rsp-8]
+  byte expected[] = {0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x89,
+                     0x44, 0x24, 0xf8, 0xb8, 0x04, 0x00, 0x00,
+                     0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 3 << kFixnumShift);
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(compile_add_three_ints) {
+  // (+ 1 (+ 2 3))
+  ASTNode *node = make_add(AST_new_fixnum(1),
+                           make_add(AST_new_fixnum(2), AST_new_fixnum(3)));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // 0:  b8 0c 00 00 00          mov    eax,0xc
+  // 5:  48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // a:  b8 08 00 00 00          mov    eax,0x8
+  // f:  48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 14: 48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // 19: b8 04 00 00 00          mov    eax,0x4
+  // 1e: 48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 23: c3                      ret
+  byte expected[] = {0xb8, 0x0c, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24,
+                     0xf8, 0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x03, 0x44,
+                     0x24, 0xf8, 0x48, 0x89, 0x44, 0x24, 0xf8, 0xb8, 0x04,
+                     0x00, 0x00, 0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 6 << kFixnumShift);
+  // TODO: figure out how to collect ASTs
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -443,6 +523,8 @@ int run_tests() {
   run_test(test_compile_primcall_sub1);
   run_test(test_compile_primcall_add1_sub1);
   run_test(test_compile_primcall_sub1_add1);
+  run_test(test_compile_add_two_ints);
+  run_test(test_compile_add_three_ints);
   done_testing();
 }
 
