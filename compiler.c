@@ -67,6 +67,14 @@ void Buffer_write_arr(BufferWriter *writer, byte *arr, size_t len) {
   }
 }
 
+const int kBitsPerByte = 8;
+
+void Buffer_write32(BufferWriter *writer, int32_t value) {
+  for (size_t i = 0; i < 4; i++) {
+    Buffer_write8(writer, (value >> (i * kBitsPerByte)) & 0xff);
+  }
+}
+
 typedef enum {
   kRax = 0,
   kRcx,
@@ -90,13 +98,9 @@ void Buffer_dec_reg(BufferWriter *writer, Register reg) {
   Buffer_write8(writer, 0xc8 + reg);
 }
 
-const int kBitsPerByte = 8;
-
 void Buffer_mov_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
   Buffer_write8(writer, 0xb8 + dst);
-  for (size_t i = 0; i < 4; i++) {
-    Buffer_write8(writer, (src >> (i * kBitsPerByte)) & 0xff);
-  }
+  Buffer_write32(writer, src);
 }
 
 void Buffer_add_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
@@ -108,9 +112,19 @@ void Buffer_add_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
     Buffer_write8(writer, 0x81);
     Buffer_write8(writer, 0xc0 + dst);
   }
-  for (size_t i = 0; i < 4; i++) {
-    Buffer_write8(writer, (src >> (i * kBitsPerByte)) & 0xff);
+  Buffer_write32(writer, src);
+}
+
+void Buffer_sub_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
+  if (dst == kRax) {
+    // Optimization: sub eax, {imm32} can either be encoded as 2d {imm32} or 81
+    // e8 {imm32}.
+    Buffer_write8(writer, 0x2d);
+  } else {
+    Buffer_write8(writer, 0x83);
+    Buffer_write8(writer, 0xe8 + dst);
   }
+  Buffer_write32(writer, src);
 }
 
 void Buffer_mov_reg_imm64(BufferWriter *writer, Register dst, int64_t src) {
@@ -207,6 +221,12 @@ int AST_compile_call(BufferWriter *writer, ASTNode *car, ASTNode *cdr) {
       ASTNode *arg1 = AST_car(cdr);
       AST_compile_expr(writer, arg1);
       Buffer_add_reg_imm32(writer, kRax, 1 << kFixnumShift);
+      return 0;
+    }
+    if (AST_atom_equals_cstr(car, "sub1")) {
+      ASTNode *arg1 = AST_car(cdr);
+      AST_compile_expr(writer, arg1);
+      Buffer_sub_reg_imm32(writer, kRax, 1 << kFixnumShift);
       return 0;
     }
     assert(0 && "unknown call");
@@ -358,7 +378,54 @@ TEST(compile_primcall_add1) {
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
   EXPECT_CALL_EQUALS(writer->buf, 6 << kFixnumShift);
-  free(node);
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(compile_primcall_sub1) {
+  // (sub1 5)
+  ASTNode *node =
+      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), NULL));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // mov eax, imm(5); sub eax, imm(1); ret
+  byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x2d,
+                     0x04, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 4 << kFixnumShift);
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(compile_primcall_add1_sub1) {
+  // (sub1 (add1 5))
+  ASTNode *add1 =
+      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), NULL));
+  ASTNode *node = AST_new_cons(AST_new_atom("sub1"), AST_new_cons(add1, NULL));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // mov eax, imm(5); add eax, imm(1); sub eax, imm(1); ret
+  byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x05, 0x04, 0x00,
+                     0x00, 0x00, 0x2d, 0x04, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 5 << kFixnumShift);
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(compile_primcall_sub1_add1) {
+  // (add1 (sub1 5))
+  ASTNode *sub1 =
+      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), NULL));
+  ASTNode *node = AST_new_cons(AST_new_atom("add1"), AST_new_cons(sub1, NULL));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // mov eax, imm(5); sub eax, imm(1); add eax, imm(1); ret
+  byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x2d, 0x04, 0x00,
+                     0x00, 0x00, 0x05, 0x04, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 5 << kFixnumShift);
+  // TODO: figure out how to collect ASTs
 }
 
 int run_tests() {
@@ -373,6 +440,9 @@ int run_tests() {
   run_test(test_mov_rdi_rbp);
   run_test(test_compile_fixnum);
   run_test(test_compile_primcall_add1);
+  run_test(test_compile_primcall_sub1);
+  run_test(test_compile_primcall_add1_sub1);
+  run_test(test_compile_primcall_sub1_add1);
   done_testing();
 }
 
