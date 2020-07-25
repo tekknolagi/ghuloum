@@ -79,11 +79,13 @@ typedef enum {
 } Register;
 
 void Buffer_inc_reg(BufferWriter *writer, Register reg) {
+  Buffer_write8(writer, 0x48);
   Buffer_write8(writer, 0xff);
   Buffer_write8(writer, 0xc0 + reg);
 }
 
 void Buffer_dec_reg(BufferWriter *writer, Register reg) {
+  Buffer_write8(writer, 0x48);
   Buffer_write8(writer, 0xff);
   Buffer_write8(writer, 0xc8 + reg);
 }
@@ -92,6 +94,20 @@ const int kBitsPerByte = 8;
 
 void Buffer_mov_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
   Buffer_write8(writer, 0xb8 + dst);
+  for (size_t i = 0; i < 4; i++) {
+    Buffer_write8(writer, (src >> (i * kBitsPerByte)) & 0xff);
+  }
+}
+
+void Buffer_add_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
+  if (dst == kRax) {
+    // Optimization: add eax, {imm32} can either be encoded as 05 {imm32} or 81
+    // c0 {imm32}.
+    Buffer_write8(writer, 0x05);
+  } else {
+    Buffer_write8(writer, 0x81);
+    Buffer_write8(writer, 0xc0 + dst);
+  }
   for (size_t i = 0; i < 4; i++) {
     Buffer_write8(writer, (src >> (i * kBitsPerByte)) & 0xff);
   }
@@ -122,12 +138,23 @@ void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
 
 typedef enum {
   kFixnum,
+  kAtom,
+  kCons,
 } ASTNodeType;
 
+struct ASTNode;
+
 typedef struct {
+  struct ASTNode *car;
+  struct ASTNode *cdr;
+} ASTCons;
+
+typedef struct ASTNode {
   ASTNodeType type;
   union {
     int fixnum;
+    char *atom;
+    ASTCons cons;
   } value;
 } ASTNode;
 
@@ -138,17 +165,77 @@ ASTNode *AST_new_fixnum(int fixnum) {
   return result;
 }
 
+ASTNode *AST_new_atom(char *atom) {
+  ASTNode *result = malloc(sizeof *result);
+  result->type = kAtom;
+  result->value.atom = strdup(atom);
+  return result;
+}
+
+ASTNode *AST_new_cons(ASTNode *car, ASTNode *cdr) {
+  ASTNode *result = malloc(sizeof *result);
+  result->type = kCons;
+  result->value.cons.car = car;
+  result->value.cons.cdr = cdr;
+  return result;
+}
+
+int AST_is_atom(ASTNode *node) { return node->type == kAtom; }
+
+int AST_atom_equals_cstr(ASTNode *node, char *cstr) {
+  assert(AST_is_atom(node));
+  return strcmp(node->value.atom, cstr) == 0;
+}
+
+ASTNode *AST_car(ASTNode *cons) {
+  assert(cons->type == kCons);
+  return cons->value.cons.car;
+}
+ASTNode *AST_cdr(ASTNode *cons) {
+  assert(cons->type == kCons);
+  return cons->value.cons.cdr;
+}
+
 static const int kFixnumShift = 2;
 
-int AST_compile(ASTNode *node, BufferWriter *writer) {
+int AST_compile_expr(BufferWriter *writer, ASTNode *node);
+
+int AST_compile_call(BufferWriter *writer, ASTNode *car, ASTNode *cdr) {
+  if (AST_is_atom(car)) {
+    // Assumed to be a primcall
+    if (AST_atom_equals_cstr(car, "add1")) {
+      ASTNode *arg1 = AST_car(cdr);
+      AST_compile_expr(writer, arg1);
+      Buffer_add_reg_imm32(writer, kRax, 1 << kFixnumShift);
+      return 0;
+    }
+    assert(0 && "unknown call");
+  }
+  assert(0 && "unknown call");
+}
+
+int AST_compile_expr(BufferWriter *writer, ASTNode *node) {
   switch (node->type) {
   case kFixnum: {
     uint32_t value = (uint32_t)node->value.fixnum;
     uint32_t encoded = value << kFixnumShift;
     Buffer_mov_reg_imm32(writer, kRax, encoded);
-    break;
+    return 0;
   }
+  case kCons: {
+    // Assumed to be in the form (<expr> <op1> <op2> ...)
+    return AST_compile_call(writer, AST_car(node), AST_cdr(node));
   }
+  case kAtom:
+    assert(0 && "unimplemented");
+  }
+  return -1;
+}
+
+int AST_compile_function(BufferWriter *writer, ASTNode *node) {
+  int result = AST_compile_expr(writer, node);
+  if (result != 0)
+    return result;
   Buffer_ret(writer);
   return 0;
 }
@@ -177,10 +264,20 @@ void run_test(void (*test_body)(BufferWriter *)) {
 }
 
 #define EXPECT_EQUALS_BYTES(buf, arr)                                          \
-  cmp_ok(0, "==", memcmp(buf->address, arr, sizeof arr), __func__)
+  {                                                                            \
+    int result =                                                               \
+        cmp_ok(memcmp(buf->address, arr, sizeof arr), "==", 0, __func__);      \
+    if (!result) {                                                             \
+      printf("NOT EQUAL. Found: ");                                            \
+      for (size_t i = 0; i < sizeof arr; i++) {                                \
+        printf("%x ", buf->address[i]);                                        \
+      }                                                                        \
+      printf("\n");                                                            \
+    }                                                                          \
+  }
 
 #define EXPECT_CALL_EQUALS(buf, expected)                                      \
-  cmp_ok(expected, "==", call_intfunction(buf), __func__)
+  cmp_ok(call_intfunction(buf), "==", expected, __func__)
 
 #define TEST(name) static void test_##name(BufferWriter *writer)
 
@@ -237,13 +334,30 @@ TEST(mov_rdi_rbp) {
 }
 
 TEST(compile_fixnum) {
+  // 123
   ASTNode *node = AST_new_fixnum(123);
-  int result = AST_compile(node, writer);
+  int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
+  // mov eax, 123; ret
   byte expected[] = {0xb8, 0xec, 0x01, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
   EXPECT_CALL_EQUALS(writer->buf, 123 << kFixnumShift);
+  free(node);
+}
+
+TEST(compile_primcall_add1) {
+  // (add1 5)
+  ASTNode *node =
+      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), NULL));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // mov eax, imm(5); add eax, imm(1); ret
+  byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x05,
+                     0x04, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, 6 << kFixnumShift);
   free(node);
 }
 
@@ -258,6 +372,7 @@ int run_tests() {
   run_test(test_mov_rax_rsi);
   run_test(test_mov_rdi_rbp);
   run_test(test_compile_fixnum);
+  run_test(test_compile_primcall_add1);
   done_testing();
 }
 
