@@ -287,18 +287,24 @@ int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index);
 ASTNode *operand1(ASTNode *args) { return AST_car(args); }
 ASTNode *operand2(ASTNode *args) { return AST_car(AST_cdr(args)); }
 
+int32_t encodeImmediateFixnum(int32_t f) {
+  assert(f < 0x7fffffff && "too big");
+  assert(f > -0x80000000L && "too small");
+  return f << kFixnumShift;
+}
+
 int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
                      int stack_index) {
   if (AST_is_atom(fnexpr)) {
     // Assumed to be a primcall
     if (AST_atom_equals_cstr(fnexpr, "add1")) {
       AST_compile_expr(writer, operand1(args), stack_index);
-      Buffer_add_reg_imm32(writer, kRax, 1 << kFixnumShift);
+      Buffer_add_reg_imm32(writer, kRax, encodeImmediateFixnum(1));
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "sub1")) {
       AST_compile_expr(writer, operand1(args), stack_index);
-      Buffer_sub_reg_imm32(writer, kRax, 1 << kFixnumShift);
+      Buffer_sub_reg_imm32(writer, kRax, encodeImmediateFixnum(1));
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "integer->char")) {
@@ -325,8 +331,7 @@ int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index) {
   switch (node->type) {
   case kFixnum: {
     uint32_t value = (uint32_t)node->value.fixnum;
-    uint32_t encoded = value << kFixnumShift;
-    Buffer_mov_reg_imm32(writer, kRax, encoded);
+    Buffer_mov_reg_imm32(writer, kRax, encodeImmediateFixnum(value));
     return 0;
   }
   case kCons: {
@@ -453,7 +458,7 @@ TEST(compile_fixnum) {
   byte expected[] = {0xb8, 0xec, 0x01, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 123 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(123));
   free(node);
 }
 
@@ -468,7 +473,7 @@ TEST(compile_primcall_add1) {
                      0x04, 0x00, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 6 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(6));
   // TODO: figure out how to collect ASTs
 }
 
@@ -483,7 +488,7 @@ TEST(compile_primcall_sub1) {
                      0x04, 0x00, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 4 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(4));
   // TODO: figure out how to collect ASTs
 }
 
@@ -499,7 +504,7 @@ TEST(compile_primcall_add1_sub1) {
                      0x00, 0x00, 0x2d, 0x04, 0x00, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 5 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(5));
   // TODO: figure out how to collect ASTs
 }
 
@@ -515,7 +520,7 @@ TEST(compile_primcall_sub1_add1) {
                      0x00, 0x00, 0x05, 0x04, 0x00, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 5 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(5));
   // TODO: figure out how to collect ASTs
 }
 
@@ -535,7 +540,7 @@ TEST(compile_add_two_ints) {
                      0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 3 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
   // TODO: figure out how to collect ASTs
 }
 
@@ -559,7 +564,7 @@ TEST(compile_add_three_ints) {
                      0x00, 0x00, 0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 6 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(6));
   // TODO: figure out how to collect ASTs
 }
 
@@ -588,8 +593,12 @@ TEST(compile_add_four_ints) {
                      0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 10 << kFixnumShift);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(10));
   // TODO: figure out how to collect ASTs
+}
+
+int encodeImmediateChar(char c) {
+  return (((unsigned int)c) << kCharShift) | kCharTag;
 }
 
 TEST(integer_to_char) {
@@ -606,8 +615,7 @@ TEST(integer_to_char) {
                      0x06, 0x48, 0x0d, 0x0f, 0x00, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf,
-                     (((unsigned int)'A') << kCharShift) | kCharTag);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateChar('A'));
   // TODO: figure out how to collect ASTs
 }
 
