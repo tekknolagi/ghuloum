@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <assert.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -93,6 +94,14 @@ typedef enum {
   kRsi,
   kRdi,
 } Register;
+
+typedef enum {
+  kAl = 0,
+} SubRegister;
+
+typedef enum {
+  kEqual,
+} Condition;
 
 void Buffer_inc_reg(BufferWriter *writer, Register reg) {
   Buffer_write8(writer, 0x48);
@@ -208,6 +217,28 @@ void Buffer_or_reg_imm32(BufferWriter *writer, Register dst, int32_t value) {
   Buffer_write32(writer, value);
 }
 
+void Buffer_cmp_reg_imm32(BufferWriter *writer, Register dst, int32_t value) {
+  if (dst == kRax) {
+    // Optimization: cmp eax, {imm32} can either be encoded as 48 3d {imm32} or
+    // 48 81 f8 {imm32}.
+    Buffer_write8(writer, 0x48);
+    Buffer_write8(writer, 0x3d);
+    Buffer_write32(writer, value);
+    return;
+  }
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0x81);
+  Buffer_write8(writer, 0xf8 + dst);
+  Buffer_write32(writer, value);
+}
+
+void Buffer_setcc_reg(BufferWriter *writer, Condition cond, SubRegister dst) {
+  assert(cond == kEqual && "other conditions unimplemented");
+  Buffer_write8(writer, 0x0f);
+  Buffer_write8(writer, 0x94);
+  Buffer_write8(writer, 0xc0 + dst);
+}
+
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
 
 // End Machine code
@@ -282,6 +313,10 @@ static const int kCharMask = 0xff;
 static const int kCharTag = 0xf;
 static const int kCharShift = 8;
 
+static const int kBoolMask = 0xf;
+static const int kBoolTag = 0x1f;
+static const int kBoolShift = 7;
+
 int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index);
 
 ASTNode *operand1(ASTNode *args) { return AST_car(args); }
@@ -313,6 +348,15 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
       // TODO: generate more compact code since we know we're only or-ing with a
       // byte
       Buffer_or_reg_imm32(writer, kRax, kCharTag);
+      return 0;
+    }
+    if (AST_atom_equals_cstr(fnexpr, "zero?")) {
+      AST_compile_expr(writer, operand1(args), stack_index);
+      Buffer_cmp_reg_imm32(writer, kRax, 0);
+      Buffer_mov_reg_imm32(writer, kRax, 0);
+      Buffer_setcc_reg(writer, kEqual, kAl);
+      Buffer_shl_reg(writer, kRax, kBoolShift);
+      Buffer_or_reg_imm32(writer, kRax, kBoolTag);
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "+")) {
@@ -619,6 +663,70 @@ TEST(integer_to_char) {
   // TODO: figure out how to collect ASTs
 }
 
+ASTNode *call1(char *fnname, ASTNode *arg) {
+  return AST_new_cons(AST_new_atom(fnname), AST_new_cons(arg, NULL));
+}
+
+int32_t encodeImmediateBool(bool value) {
+  return ((value ? 1L : 0L) << kBoolShift) | kBoolTag;
+}
+
+TEST(zerop_with_zero_returns_true) {
+  // (zero? (sub1 (add1 0)))
+  ASTNode *node =
+      call1("zero?", call1("sub1", call1("add1", AST_new_fixnum(0))));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // -> prelude
+  // 0:  b8 00 00 00 00          mov    eax,0x0
+  // 5:  05 04 00 00 00          add    eax,0x4
+  // a:  2d 04 00 00 00          sub    eax,0x4
+  // -> body of zero?
+  // f:  48 3d 00 00 00 00       cmp    rax,0x0
+  // 15: b8 00 00 00 00          mov    eax,0x0
+  // 1a: 0f 94 c0                sete   al
+  // 1d: 48 c1 e0 07             shl    rax,0x7
+  // 21: 48 0d 1f 00 00 00       or     rax,0x1f
+  // 27: c3                      ret
+  byte expected[] = {0xb8, 0x00, 0x00, 0x00, 0x00, 0x05, 0x04, 0x00,
+                     0x00, 0x00, 0x2d, 0x04, 0x00, 0x00, 0x00, 0x48,
+                     0x3d, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00,
+                     0x00, 0x00, 0x0f, 0x94, 0xc0, 0x48, 0xc1, 0xe0,
+                     0x07, 0x48, 0x0d, 0x1f, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateBool(true));
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(zerop_with_non_zero_returns_false) {
+  // (zero? (sub1 (add1 0)))
+  ASTNode *node =
+      call1("zero?", call1("sub1", call1("add1", AST_new_fixnum(1))));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // -> prelude
+  // 0:  b8 00 00 00 00          mov    eax,0x0
+  // 5:  05 04 00 00 00          add    eax,0x4
+  // a:  2d 04 00 00 00          sub    eax,0x4
+  // -> body of zero?
+  // f:  48 3d 00 00 00 00       cmp    rax,0x0
+  // 15: b8 00 00 00 00          mov    eax,0x0
+  // 1a: 0f 94 c0                sete   al
+  // 1d: 48 c1 e0 07             shl    rax,0x7
+  // 21: 48 0d 1f 00 00 00       or     rax,0x1f
+  // 27: c3                      ret
+  byte expected[] = {0xb8, 0x04, 0x00, 0x00, 0x00, 0x05, 0x04, 0x00,
+                     0x00, 0x00, 0x2d, 0x04, 0x00, 0x00, 0x00, 0x48,
+                     0x3d, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00,
+                     0x00, 0x00, 0x0f, 0x94, 0xc0, 0x48, 0xc1, 0xe0,
+                     0x07, 0x48, 0x0d, 0x1f, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateBool(false));
+  // TODO: figure out how to collect ASTs
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -638,6 +746,8 @@ int run_tests() {
   run_test(test_compile_add_three_ints);
   run_test(test_compile_add_four_ints);
   run_test(test_integer_to_char);
+  run_test(test_zerop_with_zero_returns_true);
+  run_test(test_zerop_with_non_zero_returns_false);
   done_testing();
 }
 
