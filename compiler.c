@@ -180,6 +180,16 @@ void Buffer_mov_reg_to_stack(BufferWriter *writer, Register src,
   Buffer_write8(writer, 0x100 + offset);
 }
 
+void Buffer_mov_stack_to_reg(BufferWriter *writer, Register dst,
+                             int8_t offset) {
+  assert(offset < 0 && "positive stack offset unimplemented");
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0x8b);
+  Buffer_write8(writer, 0x04 + (dst * 8) + (offset == 0 ? 0 : 0x40));
+  Buffer_write8(writer, 0x24);
+  Buffer_write8(writer, 0x100 + offset);
+}
+
 void Buffer_shl_reg(BufferWriter *writer, Register dst, int8_t bits) {
   assert(bits >= 0 && "too few bits");
   assert(bits < 64 && "too many bits");
@@ -242,6 +252,57 @@ void Buffer_setcc_reg(BufferWriter *writer, Condition cond, SubRegister dst) {
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
 
 // End Machine code
+
+// Env
+
+// An Env maps a list of names to a list of corresponding indices in the stack.
+// This is useful when binding names in function params, `let`, and at the top
+// level.
+//
+// Goal: don't allocate any EnvNodes on the heap when recursively compiling
+// functions and let-bindings; instead, borrow the atom char* and store an
+// EnvNode on the stack. All recursive leaf calls will be able to reference
+// this EnvNode and when the function returns, the name should not be
+// available/bound anyway. Eg:
+//
+// void AST_compile_let(..., ASTNode *bindings, ASTNode *body, EnvNode *env) {
+//   if (bindings == nil) {
+//     AST_compile_expr(..., body, env);
+//     return;
+//   }
+//   EnvNode new_env = bind_name(car(bindings));
+//   new_env.next = env;
+//   AST_compile_let(..., cdr(bindings), body, &new_env);
+// }
+//
+// In any case, the atoms/char* will live long enough since we don't have any
+// plan to free ASTNodes right now...
+
+typedef struct EnvNode {
+  char *name;
+  int32_t stack_index;
+  struct EnvNode *next;
+} EnvNode;
+
+EnvNode Env_init(char *name, int32_t stack_index, EnvNode *next) {
+  return (EnvNode){.name = name, .stack_index = stack_index, .next = next};
+}
+
+// Return true if found and store the corresponding stack_index in
+// *stack_index. Return false otherwise.
+bool Env_lookup(EnvNode *env, char *name, int32_t *stack_index) {
+  assert(name != NULL);
+  assert(stack_index != NULL);
+  if (env == NULL)
+    return false;
+  if (env->name == name || strcmp(env->name, name) == 0) {
+    *stack_index = env->stack_index;
+    return true;
+  }
+  return Env_lookup(env->next, name, stack_index);
+}
+
+// End Env
 
 // AST
 
@@ -327,7 +388,8 @@ static const int kBoolMask = 0xf;
 static const int kBoolTag = 0x1f;
 static const int kBoolShift = 7;
 
-int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index);
+int AST_compile_expr(BufferWriter *writer, ASTNode *node, EnvNode *env,
+                     int stack_index);
 
 ASTNode *operand1(ASTNode *args) { return AST_car(args); }
 ASTNode *operand2(ASTNode *args) { return AST_car(AST_cdr(args)); }
@@ -339,15 +401,23 @@ int32_t encodeImmediateFixnum(int32_t f) {
 }
 
 int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
-                    int stack_index) {
-  // TODO: if no bindings, emit body
-  assert(bindings == nil && "bindings not implemented");
-  AST_compile_expr(writer, body, stack_index);
-  return 0;
-  // TODO: emit code for first binding expression
-  // TODO: move result onto the stack
-  // TODO: bind name (local, not global)
-  // TODO: recursively compile let, other bindings
+                    EnvNode *env, int stack_index) {
+  if (bindings == nil) {
+    // Base case: no bindings. Emit the body.
+    AST_compile_expr(writer, body, env, stack_index);
+    return 0;
+  }
+  // Inductive case: some bindings. Emit code for the first binding, bind the
+  // name to the stack index, and recurse.
+  ASTNode *first_binding = AST_car(bindings);
+  ASTNode *name = AST_car(first_binding);
+  assert(name && name->type == kAtom && "name must be an atom");
+  ASTNode *expr = AST_car(AST_cdr(first_binding));
+  AST_compile_expr(writer, expr, env, stack_index);
+  Buffer_mov_reg_to_stack(writer, kRax, stack_index);
+  EnvNode new_env = Env_init(name->value.atom, stack_index, env);
+  return AST_compile_let(writer, AST_cdr(bindings), body, &new_env,
+                         stack_index - kWordSize);
 }
 
 ASTNode *AST_let_bindings(ASTNode *args) { return AST_car(args); }
@@ -355,21 +425,21 @@ ASTNode *AST_let_bindings(ASTNode *args) { return AST_car(args); }
 ASTNode *AST_let_body(ASTNode *args) { return AST_car(AST_cdr(args)); }
 
 int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
-                     int stack_index) {
+                     EnvNode *env, int stack_index) {
   if (AST_is_atom(fnexpr)) {
     // Assumed to be a primcall
     if (AST_atom_equals_cstr(fnexpr, "add1")) {
-      AST_compile_expr(writer, operand1(args), stack_index);
+      AST_compile_expr(writer, operand1(args), env, stack_index);
       Buffer_add_reg_imm32(writer, kRax, encodeImmediateFixnum(1));
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "sub1")) {
-      AST_compile_expr(writer, operand1(args), stack_index);
+      AST_compile_expr(writer, operand1(args), env, stack_index);
       Buffer_sub_reg_imm32(writer, kRax, encodeImmediateFixnum(1));
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "integer->char")) {
-      AST_compile_expr(writer, operand1(args), stack_index);
+      AST_compile_expr(writer, operand1(args), env, stack_index);
       Buffer_shl_reg(writer, kRax, /*bits=*/kCharShift - kFixnumShift);
       // TODO: generate more compact code since we know we're only or-ing with a
       // byte
@@ -377,7 +447,7 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "zero?")) {
-      AST_compile_expr(writer, operand1(args), stack_index);
+      AST_compile_expr(writer, operand1(args), env, stack_index);
       Buffer_cmp_reg_imm32(writer, kRax, 0);
       Buffer_mov_reg_imm32(writer, kRax, 0);
       Buffer_setcc_reg(writer, kEqual, kAl);
@@ -386,22 +456,23 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "+")) {
-      AST_compile_expr(writer, operand2(args), stack_index);
+      AST_compile_expr(writer, operand2(args), env, stack_index);
       Buffer_mov_reg_to_stack(writer, kRax, /*offset=*/stack_index);
-      AST_compile_expr(writer, operand1(args), stack_index - kWordSize);
+      AST_compile_expr(writer, operand1(args), env, stack_index - kWordSize);
       Buffer_add_reg_stack(writer, kRax, /*offset=*/stack_index);
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "let")) {
       return AST_compile_let(writer, AST_let_bindings(args), AST_let_body(args),
-                             stack_index);
+                             env, stack_index);
     }
     assert(0 && "unknown call");
   }
   assert(0 && "unknown call");
 }
 
-int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index) {
+int AST_compile_expr(BufferWriter *writer, ASTNode *node, EnvNode *env,
+                     int stack_index) {
   switch (node->type) {
   case kFixnum: {
     uint32_t value = (uint32_t)node->value.fixnum;
@@ -410,19 +481,25 @@ int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index) {
   }
   case kCons: {
     // Assumed to be in the form (<expr> <op1> <op2> ...)
-    return AST_compile_call(writer, AST_car(node), AST_cdr(node), stack_index);
+    return AST_compile_call(writer, AST_car(node), AST_cdr(node), env,
+                            stack_index);
   }
-  case kAtom:
-    // TODO: lookup variable in env
-    // TODO: if unbound, raise
-    // TODO: generate stack load
-    assert(0 && "unimplemented");
+  case kAtom: {
+    int32_t stack_index;
+    char *name = node->value.atom;
+    if (!Env_lookup(env, name, &stack_index)) {
+      fprintf(stderr, "Unbound variable: `%s'\n", name);
+      return -1;
+    }
+    Buffer_mov_stack_to_reg(writer, kRax, stack_index);
+    return 0;
+  }
   }
   return -1;
 }
 
 int AST_compile_function(BufferWriter *writer, ASTNode *node) {
-  int result = AST_compile_expr(writer, node, -kWordSize);
+  int result = AST_compile_expr(writer, node, /*env=*/NULL, -kWordSize);
   if (result != 0)
     return result;
   Buffer_ret(writer);
@@ -462,7 +539,7 @@ void run_test(void (*test_body)(BufferWriter *)) {
         printf("%.2x ", arr[i]);                                               \
       }                                                                        \
       printf("\n           Found:    ");                                       \
-      for (size_t i = 0; i < sizeof arr; i++) {                                \
+      for (size_t i = 0; i < writer->pos; i++) {                               \
         printf("%.2x ", buf->address[i]);                                      \
       }                                                                        \
       printf("\n");                                                            \
@@ -770,8 +847,60 @@ TEST(let_with_no_bindings) {
                        nil)));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
+  // mov eax, imm(2); mov [rsp-8], rax; mov rax, imm(1); add rax, [rsp-8]
+  byte expected[] = {0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x89,
+                     0x44, 0x24, 0xf8, 0xb8, 0x04, 0x00, 0x00,
+                     0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
   Buffer_make_executable(writer->buf);
   EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(let_with_one_binding) {
+  // (let ((x 2)) (+ 1 x))
+  ASTNode *node = AST_new_cons(
+      AST_new_atom("let"),
+      AST_new_cons(
+          /*bindings*/ AST_new_cons(
+              AST_new_cons(AST_new_atom("x"),
+                           AST_new_cons(AST_new_fixnum(2), nil)),
+              nil),
+          AST_new_cons(/*body*/ make_add(AST_new_fixnum(1), AST_new_atom("x")),
+                       nil)));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // 0:  b8 08 00 00 00          mov    eax,0x08
+  // 5:  48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // a:  48 8b 44 24 f8          mov    rax,QWORD PTR [rsp-0x8]
+  // f:  48 89 44 24 f0          mov    QWORD PTR [rsp-0x10],rax
+  // 14: b8 04 00 00 00          mov    eax,0x4
+  // 19: 48 03 44 24 f0          add    rax,QWORD PTR [rsp-0x10]
+  // 1e: c3                      ret
+  byte expected[] = {0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44,
+                     0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0x48,
+                     0x89, 0x44, 0x24, 0xf0, 0xb8, 0x04, 0x00, 0x00,
+                     0x00, 0x48, 0x03, 0x44, 0x24, 0xf0, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(compile_atom_with_undefined_variable) {
+  ASTNode *node = AST_new_atom("foo");
+  int result = AST_compile_expr(writer, node, /*env=*/NULL, /*stack_index=*/0);
+  cmp_ok(result, "==", -1, __func__);
+  // TODO: figure out how to collect ASTs
+}
+
+TEST(compile_atom_in_env_emits_stack_index) {
+  ASTNode *node = AST_new_atom("foo");
+  EnvNode env = Env_init("foo", -34, /*next=*/NULL);
+  int result = AST_compile_expr(writer, node, &env, /*stack_index=*/0);
+  cmp_ok(result, "==", 0, __func__);
+  byte expected[] = {0x48, 0x8b, 0x44, 0x24, 0x100 - 34};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
   // TODO: figure out how to collect ASTs
 }
 
@@ -797,6 +926,9 @@ int run_tests() {
   run_test(test_zerop_with_zero_returns_true);
   run_test(test_zerop_with_non_zero_returns_false);
   run_test(test_let_with_no_bindings);
+  run_test(test_let_with_one_binding);
+  run_test(test_compile_atom_with_undefined_variable);
+  run_test(test_compile_atom_in_env_emits_stack_index);
   done_testing();
 }
 
