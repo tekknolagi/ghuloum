@@ -376,15 +376,15 @@ ASTNode *AST_cdr(ASTNode *cons) {
   return cons->value.cons.cdr;
 }
 
-static const int kFixnumMask = 0x3;
-static const int kFixnumTag = 0x0;
+__attribute__((used)) static const int kFixnumMask = 0x3;
+__attribute__((used)) static const int kFixnumTag = 0x0;
 static const int kFixnumShift = 2;
 
-static const int kCharMask = 0xff;
-static const int kCharTag = 0xf;
+__attribute__((used)) static const int kCharMask = 0xff;
+__attribute__((used)) static const int kCharTag = 0xf;
 static const int kCharShift = 8;
 
-static const int kBoolMask = 0xf;
+__attribute__((used)) static const int kBoolMask = 0xf;
 static const int kBoolTag = 0x1f;
 static const int kBoolShift = 7;
 
@@ -616,10 +616,17 @@ TEST(compile_fixnum) {
   free(node);
 }
 
+ASTNode *list1(ASTNode *e0) { return AST_new_cons(e0, nil); }
+
+ASTNode *list2(ASTNode *e0, ASTNode *e1) { return AST_new_cons(e0, list1(e1)); }
+
+ASTNode *list3(ASTNode *e0, ASTNode *e1, ASTNode *e2) {
+  return AST_new_cons(e0, list2(e1, e2));
+}
+
 TEST(compile_primcall_add1) {
   // (add1 5)
-  ASTNode *node =
-      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), nil));
+  ASTNode *node = list2(AST_new_atom("add1"), AST_new_fixnum(5));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); add eax, imm(1); ret
@@ -633,8 +640,7 @@ TEST(compile_primcall_add1) {
 
 TEST(compile_primcall_sub1) {
   // (sub1 5)
-  ASTNode *node =
-      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), nil));
+  ASTNode *node = list2(AST_new_atom("sub1"), AST_new_fixnum(5));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); sub eax, imm(1); ret
@@ -648,9 +654,8 @@ TEST(compile_primcall_sub1) {
 
 TEST(compile_primcall_add1_sub1) {
   // (sub1 (add1 5))
-  ASTNode *add1 =
-      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), nil));
-  ASTNode *node = AST_new_cons(AST_new_atom("sub1"), AST_new_cons(add1, nil));
+  ASTNode *node = list2(AST_new_atom("sub1"),
+                        list2(AST_new_atom("add1"), AST_new_fixnum(5)));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); add eax, imm(1); sub eax, imm(1); ret
@@ -664,9 +669,8 @@ TEST(compile_primcall_add1_sub1) {
 
 TEST(compile_primcall_sub1_add1) {
   // (add1 (sub1 5))
-  ASTNode *sub1 =
-      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), nil));
-  ASTNode *node = AST_new_cons(AST_new_atom("add1"), AST_new_cons(sub1, nil));
+  ASTNode *node = list2(AST_new_atom("add1"),
+                        list2(AST_new_atom("sub1"), AST_new_fixnum(5)));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); sub eax, imm(1); add eax, imm(1); ret
@@ -678,14 +682,10 @@ TEST(compile_primcall_sub1_add1) {
   // TODO: figure out how to collect ASTs
 }
 
-ASTNode *make_add(ASTNode *left, ASTNode *right) {
-  return AST_new_cons(AST_new_atom("+"),
-                      AST_new_cons(left, AST_new_cons(right, nil)));
-}
-
 TEST(compile_add_two_ints) {
   // (+ 1 2)
-  ASTNode *node = make_add(AST_new_fixnum(1), AST_new_fixnum(2));
+  ASTNode *node =
+      list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(2); mov [rsp-8], rax; mov rax, imm(1); add rax, [rsp-8]
@@ -700,8 +700,9 @@ TEST(compile_add_two_ints) {
 
 TEST(compile_add_three_ints) {
   // (+ 1 (+ 2 3))
-  ASTNode *node = make_add(AST_new_fixnum(1),
-                           make_add(AST_new_fixnum(2), AST_new_fixnum(3)));
+  ASTNode *node =
+      list3(AST_new_atom("+"), AST_new_fixnum(1),
+            list3(AST_new_atom("+"), AST_new_fixnum(2), AST_new_fixnum(3)));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 0c 00 00 00          mov    eax,0xc
@@ -724,8 +725,10 @@ TEST(compile_add_three_ints) {
 
 TEST(compile_add_four_ints) {
   // (+ (+ 1 2) (+ 3 4))
-  ASTNode *node = make_add(make_add(AST_new_fixnum(1), AST_new_fixnum(2)),
-                           make_add(AST_new_fixnum(3), AST_new_fixnum(4)));
+  ASTNode *node =
+      list3(AST_new_atom("+"),
+            list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)),
+            list3(AST_new_atom("+"), AST_new_fixnum(3), AST_new_fixnum(4)));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 10 00 00 00          mov    eax,0x10
@@ -757,8 +760,7 @@ int encodeImmediateChar(char c) {
 
 TEST(integer_to_char) {
   // (integer->char 65)
-  ASTNode *node = AST_new_cons(AST_new_atom("integer->char"),
-                               AST_new_cons(AST_new_fixnum(65), nil));
+  ASTNode *node = list2(AST_new_atom("integer->char"), AST_new_fixnum(65));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 04 01 00 00          mov    eax,0x104
@@ -774,7 +776,7 @@ TEST(integer_to_char) {
 }
 
 ASTNode *call1(char *fnname, ASTNode *arg) {
-  return AST_new_cons(AST_new_atom(fnname), AST_new_cons(arg, nil));
+  return list2(AST_new_atom(fnname), arg);
 }
 
 int32_t encodeImmediateBool(bool value) {
@@ -839,12 +841,10 @@ TEST(zerop_with_non_zero_returns_false) {
 
 TEST(let_with_no_bindings) {
   // (let () (+ 1 2))
-  ASTNode *node = AST_new_cons(
+  ASTNode *node = list3(
       AST_new_atom("let"),
-      AST_new_cons(
-          /*bindings*/ nil,
-          AST_new_cons(/*body*/ make_add(AST_new_fixnum(1), AST_new_fixnum(2)),
-                       nil)));
+      /*bindings*/ nil,
+      /*body*/ list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(2); mov [rsp-8], rax; mov rax, imm(1); add rax, [rsp-8]
@@ -859,15 +859,10 @@ TEST(let_with_no_bindings) {
 
 TEST(let_with_one_binding) {
   // (let ((x 2)) (+ 1 x))
-  ASTNode *node = AST_new_cons(
+  ASTNode *node = list3(
       AST_new_atom("let"),
-      AST_new_cons(
-          /*bindings*/ AST_new_cons(
-              AST_new_cons(AST_new_atom("x"),
-                           AST_new_cons(AST_new_fixnum(2), nil)),
-              nil),
-          AST_new_cons(/*body*/ make_add(AST_new_fixnum(1), AST_new_atom("x")),
-                       nil)));
+      /*bindings*/ list1(list2(AST_new_atom("x"), AST_new_fixnum(2))),
+      /*body*/ list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_atom("x")));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 08 00 00 00          mov    eax,0x08
