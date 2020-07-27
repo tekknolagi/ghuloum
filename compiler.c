@@ -328,6 +328,23 @@ int32_t encodeImmediateFixnum(int32_t f) {
   return f << kFixnumShift;
 }
 
+int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
+                    int stack_index) {
+  // TODO: if no bindings, emit body
+  assert(AST_car(bindings) == NULL && "bindings not implemented");
+  assert(AST_cdr(bindings) == NULL && "bindings not implemented");
+  AST_compile_expr(writer, body, stack_index);
+  return 0;
+  // TODO: emit code for first binding expression
+  // TODO: move result onto the stack
+  // TODO: bind name (local, not global)
+  // TODO: recursively compile let, other bindings
+}
+
+ASTNode *AST_let_bindings(ASTNode *args) { return AST_car(args); }
+
+ASTNode *AST_let_body(ASTNode *args) { return AST_car(AST_cdr(args)); }
+
 int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
                      int stack_index) {
   if (AST_is_atom(fnexpr)) {
@@ -366,6 +383,10 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
       Buffer_add_reg_stack(writer, kRax, /*offset=*/stack_index);
       return 0;
     }
+    if (AST_atom_equals_cstr(fnexpr, "let")) {
+      return AST_compile_let(writer, AST_let_bindings(args), AST_let_body(args),
+                             stack_index);
+    }
     assert(0 && "unknown call");
   }
   assert(0 && "unknown call");
@@ -383,6 +404,9 @@ int AST_compile_expr(BufferWriter *writer, ASTNode *node, int stack_index) {
     return AST_compile_call(writer, AST_car(node), AST_cdr(node), stack_index);
   }
   case kAtom:
+    // TODO: lookup variable in env
+    // TODO: if unbound, raise
+    // TODO: generate stack load
     assert(0 && "unimplemented");
   }
   return -1;
@@ -727,6 +751,21 @@ TEST(zerop_with_non_zero_returns_false) {
   // TODO: figure out how to collect ASTs
 }
 
+TEST(let_with_no_bindings) {
+  // (let () (+ 1 2))
+  ASTNode *node = AST_new_cons(
+      AST_new_atom("let"),
+      AST_new_cons(
+          /*bindings*/ AST_new_cons(NULL, NULL),
+          AST_new_cons(/*body*/ make_add(AST_new_fixnum(1), AST_new_fixnum(2)),
+                       NULL)));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+  // TODO: figure out how to collect ASTs
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -748,6 +787,7 @@ int run_tests() {
   run_test(test_integer_to_char);
   run_test(test_zerop_with_zero_returns_true);
   run_test(test_zerop_with_non_zero_returns_false);
+  run_test(test_let_with_no_bindings);
   done_testing();
 }
 
