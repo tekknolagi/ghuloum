@@ -267,6 +267,9 @@ typedef struct ASTNode {
   } value;
 } ASTNode;
 
+ASTNode nil_struct = {.type = kCons, .value.cons = {.car = NULL, .cdr = NULL}};
+ASTNode *nil = &nil_struct;
+
 ASTNode *AST_new_fixnum(int fixnum) {
   ASTNode *result = malloc(sizeof *result);
   result->type = kFixnum;
@@ -282,6 +285,10 @@ ASTNode *AST_new_atom(char *atom) {
 }
 
 ASTNode *AST_new_cons(ASTNode *car, ASTNode *cdr) {
+  if (car == NULL && cdr == NULL)
+    return nil;
+  assert(car != NULL && "both car & cdr must be NULL, or neither");
+  assert(cdr != NULL && "both car & cdr must be NULL, or neither");
   ASTNode *result = malloc(sizeof *result);
   result->type = kCons;
   result->value.cons.car = car;
@@ -297,10 +304,13 @@ int AST_atom_equals_cstr(ASTNode *node, char *cstr) {
 }
 
 ASTNode *AST_car(ASTNode *cons) {
+  assert(cons != nil);
   assert(cons->type == kCons);
   return cons->value.cons.car;
 }
+
 ASTNode *AST_cdr(ASTNode *cons) {
+  assert(cons != nil);
   assert(cons->type == kCons);
   return cons->value.cons.cdr;
 }
@@ -331,8 +341,7 @@ int32_t encodeImmediateFixnum(int32_t f) {
 int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
                     int stack_index) {
   // TODO: if no bindings, emit body
-  assert(AST_car(bindings) == NULL && "bindings not implemented");
-  assert(AST_cdr(bindings) == NULL && "bindings not implemented");
+  assert(bindings == nil && "bindings not implemented");
   AST_compile_expr(writer, body, stack_index);
   return 0;
   // TODO: emit code for first binding expression
@@ -533,7 +542,7 @@ TEST(compile_fixnum) {
 TEST(compile_primcall_add1) {
   // (add1 5)
   ASTNode *node =
-      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), NULL));
+      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), nil));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); add eax, imm(1); ret
@@ -548,7 +557,7 @@ TEST(compile_primcall_add1) {
 TEST(compile_primcall_sub1) {
   // (sub1 5)
   ASTNode *node =
-      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), NULL));
+      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), nil));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); sub eax, imm(1); ret
@@ -563,8 +572,8 @@ TEST(compile_primcall_sub1) {
 TEST(compile_primcall_add1_sub1) {
   // (sub1 (add1 5))
   ASTNode *add1 =
-      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), NULL));
-  ASTNode *node = AST_new_cons(AST_new_atom("sub1"), AST_new_cons(add1, NULL));
+      AST_new_cons(AST_new_atom("add1"), AST_new_cons(AST_new_fixnum(5), nil));
+  ASTNode *node = AST_new_cons(AST_new_atom("sub1"), AST_new_cons(add1, nil));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); add eax, imm(1); sub eax, imm(1); ret
@@ -579,8 +588,8 @@ TEST(compile_primcall_add1_sub1) {
 TEST(compile_primcall_sub1_add1) {
   // (add1 (sub1 5))
   ASTNode *sub1 =
-      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), NULL));
-  ASTNode *node = AST_new_cons(AST_new_atom("add1"), AST_new_cons(sub1, NULL));
+      AST_new_cons(AST_new_atom("sub1"), AST_new_cons(AST_new_fixnum(5), nil));
+  ASTNode *node = AST_new_cons(AST_new_atom("add1"), AST_new_cons(sub1, nil));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); sub eax, imm(1); add eax, imm(1); ret
@@ -594,7 +603,7 @@ TEST(compile_primcall_sub1_add1) {
 
 ASTNode *make_add(ASTNode *left, ASTNode *right) {
   return AST_new_cons(AST_new_atom("+"),
-                      AST_new_cons(left, AST_new_cons(right, NULL)));
+                      AST_new_cons(left, AST_new_cons(right, nil)));
 }
 
 TEST(compile_add_two_ints) {
@@ -672,7 +681,7 @@ int encodeImmediateChar(char c) {
 TEST(integer_to_char) {
   // (integer->char 65)
   ASTNode *node = AST_new_cons(AST_new_atom("integer->char"),
-                               AST_new_cons(AST_new_fixnum(65), NULL));
+                               AST_new_cons(AST_new_fixnum(65), nil));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 04 01 00 00          mov    eax,0x104
@@ -688,7 +697,7 @@ TEST(integer_to_char) {
 }
 
 ASTNode *call1(char *fnname, ASTNode *arg) {
-  return AST_new_cons(AST_new_atom(fnname), AST_new_cons(arg, NULL));
+  return AST_new_cons(AST_new_atom(fnname), AST_new_cons(arg, nil));
 }
 
 int32_t encodeImmediateBool(bool value) {
@@ -756,9 +765,9 @@ TEST(let_with_no_bindings) {
   ASTNode *node = AST_new_cons(
       AST_new_atom("let"),
       AST_new_cons(
-          /*bindings*/ AST_new_cons(NULL, NULL),
+          /*bindings*/ nil,
           AST_new_cons(/*body*/ make_add(AST_new_fixnum(1), AST_new_fixnum(2)),
-                       NULL)));
+                       nil)));
   int result = AST_compile_function(writer, node);
   cmp_ok(result, "==", 0, __func__);
   Buffer_make_executable(writer->buf);
