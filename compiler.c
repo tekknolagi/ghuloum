@@ -57,6 +57,20 @@ void BufferWriter_init(BufferWriter *writer, Buffer *buf) {
   writer->pos = 0;
 }
 
+const int kBitsPerByte = 8; // bits
+const int kWordSize = 8;    // bytes
+
+void BufferWriter_backpatch_displacement_imm32(BufferWriter *writer,
+                                               int32_t pos_after_jump) {
+  int32_t relative = writer->pos - pos_after_jump;
+  int32_t displacement_first_byte = pos_after_jump - sizeof(int32_t);
+  for (size_t i = 0; i < sizeof(int32_t); i++) {
+    Buffer_at_put(writer->buf, displacement_first_byte + i,
+                  (relative >> (i * kBitsPerByte)) & 0xff);
+  }
+}
+size_t BufferWriter_get_pos(BufferWriter *writer) { return writer->pos; }
+
 void Buffer_dump(BufferWriter *writer, FILE *fp) {
   for (size_t i = 0; i < writer->pos; i++) {
     fprintf(fp, "%.2x ", writer->buf->address[i]);
@@ -74,9 +88,6 @@ void Buffer_write_arr(BufferWriter *writer, byte *arr, size_t len) {
     Buffer_write8(writer, arr[i]);
   }
 }
-
-const int kBitsPerByte = 8; // bits
-const int kWordSize = 8;    // bytes
 
 void Buffer_write32(BufferWriter *writer, int32_t value) {
   for (size_t i = 0; i < 4; i++) {
@@ -247,6 +258,21 @@ void Buffer_setcc_reg(BufferWriter *writer, Condition cond, SubRegister dst) {
   Buffer_write8(writer, 0x0f);
   Buffer_write8(writer, 0x94);
   Buffer_write8(writer, 0xc0 + dst);
+}
+
+// Relative jump
+void Buffer_je_imm32(BufferWriter *writer, int32_t disp) {
+  assert(disp > 0 && "negative disp unimplemented");
+  Buffer_write8(writer, 0x0f);
+  Buffer_write8(writer, 0x84);
+  Buffer_write32(writer, disp);
+}
+
+// Relative jump
+void Buffer_jmp_imm32(BufferWriter *writer, int32_t disp) {
+  assert(disp > 0 && "negative disp unimplemented");
+  Buffer_write8(writer, 0xe9);
+  Buffer_write32(writer, disp);
 }
 
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
@@ -424,6 +450,38 @@ ASTNode *AST_let_bindings(ASTNode *args) { return AST_car(args); }
 
 ASTNode *AST_let_body(ASTNode *args) { return AST_car(AST_cdr(args)); }
 
+// http://ref.x86asm.net/coder32.html
+// https://www.felixcloutier.com/x86/index.html
+// rasm2 -D -b64 "48 89 44 24 f8 "
+//  -> or -d
+
+int32_t encodeImmediateBool(bool value) {
+  return ((value ? 1L : 0L) << kBoolShift) | kBoolTag;
+}
+
+int AST_compile_if(BufferWriter *writer, ASTNode *test, ASTNode *iftrue,
+                   ASTNode *iffalse, EnvNode *env, int stack_index) {
+  AST_compile_expr(writer, test, env, stack_index);
+  Buffer_cmp_reg_imm32(writer, kRax, encodeImmediateBool(false));
+  Buffer_je_imm32(writer, 0x12345678);
+  int iffalse_pos = BufferWriter_get_pos(writer);
+  AST_compile_expr(writer, iftrue, env, stack_index);
+  Buffer_jmp_imm32(writer, 0x1a2b3c4d);
+  int end_pos = BufferWriter_get_pos(writer);
+  BufferWriter_backpatch_displacement_imm32(writer, iffalse_pos);
+  AST_compile_expr(writer, iffalse, env, stack_index);
+  BufferWriter_backpatch_displacement_imm32(writer, end_pos);
+  return 0;
+}
+
+ASTNode *AST_if_test(ASTNode *args) { return AST_car(args); }
+
+ASTNode *AST_if_iftrue(ASTNode *args) { return AST_car(AST_cdr(args)); }
+
+ASTNode *AST_if_iffalse(ASTNode *args) {
+  return AST_car(AST_cdr(AST_cdr(args)));
+}
+
 int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
                      EnvNode *env, int stack_index) {
   if (AST_is_atom(fnexpr)) {
@@ -465,6 +523,11 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
     if (AST_atom_equals_cstr(fnexpr, "let")) {
       return AST_compile_let(writer, AST_let_bindings(args), AST_let_body(args),
                              env, stack_index);
+    }
+    if (AST_atom_equals_cstr(fnexpr, "if")) {
+      // TODO: in if, rewrite empty iffalse => '()
+      return AST_compile_if(writer, AST_if_test(args), AST_if_iftrue(args),
+                            AST_if_iffalse(args), env, stack_index);
     }
     assert(0 && "unknown call");
   }
@@ -624,6 +687,10 @@ ASTNode *list3(ASTNode *e0, ASTNode *e1, ASTNode *e2) {
   return AST_new_cons(e0, list2(e1, e2));
 }
 
+ASTNode *list4(ASTNode *e0, ASTNode *e1, ASTNode *e2, ASTNode *e3) {
+  return AST_new_cons(e0, list3(e1, e2, e3));
+}
+
 TEST(compile_primcall_add1) {
   // (add1 5)
   ASTNode *node = list2(AST_new_atom("add1"), AST_new_fixnum(5));
@@ -779,10 +846,6 @@ ASTNode *call1(char *fnname, ASTNode *arg) {
   return list2(AST_new_atom(fnname), arg);
 }
 
-int32_t encodeImmediateBool(bool value) {
-  return ((value ? 1L : 0L) << kBoolShift) | kBoolTag;
-}
-
 TEST(zerop_with_zero_returns_true) {
   // (zero? (sub1 (add1 0)))
   ASTNode *node =
@@ -899,6 +962,94 @@ TEST(compile_atom_in_env_emits_stack_index) {
   // TODO: figure out how to collect ASTs
 }
 
+TEST(compile_if_test_true) {
+  // (if (zero? 0) (+ 1 2) (+ 3 4))
+  ASTNode *node =
+      list4(AST_new_atom("if"), list2(AST_new_atom("zero?"), AST_new_fixnum(0)),
+            list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)),
+            list3(AST_new_atom("+"), AST_new_fixnum(3), AST_new_fixnum(4)));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // 0:  b8 00 00 00 00          mov    eax,0x0
+  // -> zero?
+  // 5:  48 3d 00 00 00 00       cmp    rax,0x0
+  // b:  b8 00 00 00 00          mov    eax,0x0
+  // 10: 0f 94 c0                sete   al
+  // 13: 48 c1 e0 07             shl    rax,0x7
+  // 17: 48 0d 1f 00 00 00       or     rax,0x1f
+  // -> if
+  // 1d: 48 3d 1f 00 00 00       cmp    rax,0x1f
+  // 23: 0f 84 19 00 00 00       je     0x42
+  // +
+  // 29: b8 08 00 00 00          mov    eax,0x8
+  // 2e: 48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // 33: b8 04 00 00 00          mov    eax,0x4
+  // 38: 48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 3d: e9 14 00 00 00          jmp    0x56
+  // +
+  // 42: b8 10 00 00 00          mov    eax,0x10
+  // 47: 48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // 4c: b8 0c 00 00 00          mov    eax,0xc
+  // 51: 48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 56: c3                      ret
+  byte expected[] = {0xb8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x3d, 0x00, 0x00, 0x00,
+                     0x00, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x94, 0xc0, 0x48,
+                     0xc1, 0xe0, 0x07, 0x48, 0x0d, 0x1f, 0x00, 0x00, 0x00, 0x48,
+                     0x3d, 0x1f, 0x00, 0x00, 0x00, 0x0f, 0x84, 0x19, 0x00, 0x00,
+                     0x00, 0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24,
+                     0xf8, 0xb8, 0x04, 0x00, 0x00, 0x00, 0x48, 0x03, 0x44, 0x24,
+                     0xf8, 0xe9, 0x14, 0x00, 0x00, 0x00, 0xb8, 0x10, 0x00, 0x00,
+                     0x00, 0x48, 0x89, 0x44, 0x24, 0xf8, 0xb8, 0x0c, 0x00, 0x00,
+                     0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+}
+
+TEST(compile_if_test_false) {
+  // (if (zero? 1) (+ 1 2) (+ 3 4))
+  ASTNode *node =
+      list4(AST_new_atom("if"), list2(AST_new_atom("zero?"), AST_new_fixnum(1)),
+            list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)),
+            list3(AST_new_atom("+"), AST_new_fixnum(3), AST_new_fixnum(4)));
+  int result = AST_compile_function(writer, node);
+  cmp_ok(result, "==", 0, __func__);
+  // 0:  b8 04 00 00 00          mov    eax,imm(0x1)
+  // -> zero?
+  // 5:  48 3d 00 00 00 00       cmp    rax,0x0
+  // b:  b8 00 00 00 00          mov    eax,0x0
+  // 10: 0f 94 c0                sete   al
+  // 13: 48 c1 e0 07             shl    rax,0x7
+  // 17: 48 0d 1f 00 00 00       or     rax,0x1f
+  // -> if
+  // 1d: 48 3d 1f 00 00 00       cmp    rax,0x1f
+  // 23: 0f 84 19 00 00 00       je     0x42
+  // +
+  // 29: b8 08 00 00 00          mov    eax,0x8
+  // 2e: 48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // 33: b8 04 00 00 00          mov    eax,0x4
+  // 38: 48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 3d: e9 14 00 00 00          jmp    0x56
+  // +
+  // 42: b8 10 00 00 00          mov    eax,0x10
+  // 47: 48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
+  // 4c: b8 0c 00 00 00          mov    eax,0xc
+  // 51: 48 03 44 24 f8          add    rax,QWORD PTR [rsp-0x8]
+  // 56: c3                      ret
+  byte expected[] = {0xb8, 0x04, 0x00, 0x00, 0x00, 0x48, 0x3d, 0x00, 0x00, 0x00,
+                     0x00, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x94, 0xc0, 0x48,
+                     0xc1, 0xe0, 0x07, 0x48, 0x0d, 0x1f, 0x00, 0x00, 0x00, 0x48,
+                     0x3d, 0x1f, 0x00, 0x00, 0x00, 0x0f, 0x84, 0x19, 0x00, 0x00,
+                     0x00, 0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24,
+                     0xf8, 0xb8, 0x04, 0x00, 0x00, 0x00, 0x48, 0x03, 0x44, 0x24,
+                     0xf8, 0xe9, 0x14, 0x00, 0x00, 0x00, 0xb8, 0x10, 0x00, 0x00,
+                     0x00, 0x48, 0x89, 0x44, 0x24, 0xf8, 0xb8, 0x0c, 0x00, 0x00,
+                     0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(7));
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -924,6 +1075,8 @@ int run_tests() {
   run_test(test_let_with_one_binding);
   run_test(test_compile_atom_with_undefined_variable);
   run_test(test_compile_atom_in_env_emits_stack_index);
+  run_test(test_compile_if_test_true);
+  run_test(test_compile_if_test_false);
   done_testing();
 }
 
