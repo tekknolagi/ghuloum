@@ -188,6 +188,15 @@ void Buffer_add_reg_stack(BufferWriter *writer, Register dst, int8_t offset) {
   Buffer_write8(writer, 0x100 + offset);
 }
 
+void Buffer_mov_rax_to_reg_disp(BufferWriter *writer, Register dst,
+                                int8_t disp) {
+  assert(disp >= 0 && "negative displacement unimplemented");
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0x89);
+  Buffer_write8(writer, 0x40 + dst);
+  Buffer_write8(writer, disp);
+}
+
 void Buffer_sub_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
   if (dst == kRax) {
     // Optimization: sub eax, {imm32} can either be encoded as 2d {imm32} or 81
@@ -443,6 +452,7 @@ int AST_compile_expr(BufferWriter *writer, ASTNode *node, EnvNode *env,
 
 ASTNode *operand1(ASTNode *args) { return AST_car(args); }
 ASTNode *operand2(ASTNode *args) { return AST_car(AST_cdr(args)); }
+ASTNode *operand3(ASTNode *args) { return AST_car(AST_cdr(AST_cdr(args))); }
 
 int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
                     EnvNode *env, int stack_index) {
@@ -464,10 +474,6 @@ int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
                          stack_index - kWordSize);
 }
 
-ASTNode *AST_let_bindings(ASTNode *args) { return AST_car(args); }
-
-ASTNode *AST_let_body(ASTNode *args) { return AST_car(AST_cdr(args)); }
-
 // http://ref.x86asm.net/coder32.html
 // https://www.felixcloutier.com/x86/index.html
 // rasm2 -D -b64 "48 89 44 24 f8 "
@@ -488,12 +494,20 @@ int AST_compile_if(BufferWriter *writer, ASTNode *test, ASTNode *iftrue,
   return 0;
 }
 
-ASTNode *AST_if_test(ASTNode *args) { return AST_car(args); }
-
-ASTNode *AST_if_iftrue(ASTNode *args) { return AST_car(AST_cdr(args)); }
-
-ASTNode *AST_if_iffalse(ASTNode *args) {
-  return AST_car(AST_cdr(AST_cdr(args)));
+int AST_compile_cons(BufferWriter *writer, ASTNode *car, ASTNode *cdr,
+                     EnvNode *env, int stack_index) {
+  AST_compile_expr(writer, car, env, stack_index - kWordSize);
+  // Set car
+  Buffer_mov_rax_to_reg_disp(writer, kRsi, 0);
+  AST_compile_expr(writer, cdr, env, stack_index);
+  // Set cdr
+  Buffer_mov_rax_to_reg_disp(writer, kRsi, kWordSize);
+  // Tag the pointer
+  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRsi);
+  Buffer_or_reg_imm32(writer, /*dst=*/kRax, 1);
+  // Bump heap
+  Buffer_add_reg_imm32(writer, /*dst=*/kRsi, 2 * kWordSize);
+  return 0;
 }
 
 int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
@@ -535,13 +549,17 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "let")) {
-      return AST_compile_let(writer, AST_let_bindings(args), AST_let_body(args),
-                             env, stack_index);
+      return AST_compile_let(writer, /*bindings=*/operand1(args),
+                             /*body=*/operand2(args), env, stack_index);
     }
     if (AST_atom_equals_cstr(fnexpr, "if")) {
       // TODO: in if, rewrite empty iffalse => '()
-      return AST_compile_if(writer, AST_if_test(args), AST_if_iftrue(args),
-                            AST_if_iffalse(args), env, stack_index);
+      return AST_compile_if(writer, operand1(args), operand2(args),
+                            operand3(args), env, stack_index);
+    }
+    if (AST_atom_equals_cstr(fnexpr, "cons")) {
+      return AST_compile_cons(writer, operand1(args), operand2(args), env,
+                              stack_index);
     }
     assert(0 && "unknown call");
   }
@@ -581,6 +599,12 @@ int AST_compile_function(BufferWriter *writer, ASTNode *node) {
     return result;
   Buffer_ret(writer);
   return 0;
+}
+
+int AST_compile_entry(BufferWriter *writer, ASTNode *node) {
+  // Save the heap in rsi, our global heap pointer
+  Buffer_mov_reg_reg(writer, /*dst=*/kRsi, /*src=*/kRdi);
+  return AST_compile_function(writer, node);
 }
 
 // End AST
@@ -1072,6 +1096,35 @@ TEST(return_heap_address) {
   cmp_ok(result, "==", 0xdeadbeef, __func__);
 }
 
+TEST(compile_cons) {
+  // (cons 10 20)
+  ASTNode *node =
+      list3(AST_new_atom("cons"), AST_new_fixnum(10), AST_new_fixnum(20));
+  int compile_result = AST_compile_entry(writer, node);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // 0:  48 89 fe                mov    rsi,rdi
+  // 3:  b8 28 00 00 00          mov    eax,0x28
+  // 8:  48 89 46 00             mov    QWORD PTR [rsi+0x0],rax
+  // c:  b8 50 00 00 00          mov    eax,0x50
+  // 11: 48 89 46 08             mov    QWORD PTR [rsi+0x8],rax
+  // 15: 48 89 f0                mov    rax,rsi
+  // 18: 48 0d 01 00 00 00       or     rax,0x1
+  // 1e: 81 c6 10 00 00 00       add    esi,0x10
+  // 24: c3                      ret
+  byte expected[] = {0x48, 0x89, 0xfe, 0xb8, 0x28, 0x00, 0x00, 0x00, 0x48, 0x89,
+                     0x46, 0x00, 0xb8, 0x50, 0x00, 0x00, 0x00, 0x48, 0x89, 0x46,
+                     0x08, 0x48, 0x89, 0xf0, 0x48, 0x0d, 0x01, 0x00, 0x00, 0x00,
+                     0x81, 0xc6, 0x10, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  uint64_t (*function)(uint64_t heap) =
+      (uint64_t(*)(uint64_t))writer->buf->address;
+  void *heap = malloc(100 * kWordSize);
+  uint64_t result = function((uint64_t)heap);
+  cmp_ok(result, "==", (uintptr_t)heap | 0x1UL, __func__);
+  free(heap);
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -1100,6 +1153,7 @@ int run_tests() {
   run_test(test_compile_if_test_true);
   run_test(test_compile_if_test_false);
   run_test(test_return_heap_address);
+  run_test(test_compile_cons);
   done_testing();
 }
 
