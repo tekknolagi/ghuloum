@@ -10,6 +10,42 @@
 
 #include "libtap/tap.h"
 
+// Objects
+//
+__attribute__((used)) static const int kFixnumTag = 0x0;
+__attribute__((used)) static const int kPairTag = 0x1;
+__attribute__((used)) static const int kVectorTag = 0x2;
+__attribute__((used)) static const int kStringTag = 0x3;
+__attribute__((used)) static const int kSymbolTag = 0x5;
+__attribute__((used)) static const int kClosureTag = 0x6;
+__attribute__((used)) static const int kCharTag = 0xf;
+__attribute__((used)) static const int kBoolTag = 0x1f;
+__attribute__((used)) static const int kNilTag = 0x2f;
+
+__attribute__((used)) static const int kBoolMask = 0xf;
+__attribute__((used)) static const int kBoolShift = 7;
+__attribute__((used)) static const int kCharMask = 0xff;
+__attribute__((used)) static const int kCharShift = 8;
+__attribute__((used)) static const int kFixnumMask = 0x3;
+__attribute__((used)) static const int kFixnumShift = 2;
+__attribute__((used)) static const int kHeapObjectMask = 0x7;
+
+int32_t encodeImmediateFixnum(int32_t f) {
+  assert(f < 0x7fffffff && "too big");
+  assert(f > -0x80000000L && "too small");
+  return f << kFixnumShift;
+}
+
+int32_t encodeImmediateBool(bool value) {
+  return ((value ? 1L : 0L) << kBoolShift) | kBoolTag;
+}
+
+int32_t encodeImmediateChar(char c) {
+  return ((int32_t)c << kCharShift) | kCharTag;
+}
+
+// End Objects
+
 // Machine code
 
 typedef unsigned char byte;
@@ -402,29 +438,11 @@ ASTNode *AST_cdr(ASTNode *cons) {
   return cons->value.cons.cdr;
 }
 
-__attribute__((used)) static const int kFixnumMask = 0x3;
-__attribute__((used)) static const int kFixnumTag = 0x0;
-static const int kFixnumShift = 2;
-
-__attribute__((used)) static const int kCharMask = 0xff;
-__attribute__((used)) static const int kCharTag = 0xf;
-static const int kCharShift = 8;
-
-__attribute__((used)) static const int kBoolMask = 0xf;
-static const int kBoolTag = 0x1f;
-static const int kBoolShift = 7;
-
 int AST_compile_expr(BufferWriter *writer, ASTNode *node, EnvNode *env,
                      int stack_index);
 
 ASTNode *operand1(ASTNode *args) { return AST_car(args); }
 ASTNode *operand2(ASTNode *args) { return AST_car(AST_cdr(args)); }
-
-int32_t encodeImmediateFixnum(int32_t f) {
-  assert(f < 0x7fffffff && "too big");
-  assert(f > -0x80000000L && "too small");
-  return f << kFixnumShift;
-}
 
 int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
                     EnvNode *env, int stack_index) {
@@ -454,10 +472,6 @@ ASTNode *AST_let_body(ASTNode *args) { return AST_car(AST_cdr(args)); }
 // https://www.felixcloutier.com/x86/index.html
 // rasm2 -D -b64 "48 89 44 24 f8 "
 //  -> or -d
-
-int32_t encodeImmediateBool(bool value) {
-  return ((value ? 1L : 0L) << kBoolShift) | kBoolTag;
-}
 
 int AST_compile_if(BufferWriter *writer, ASTNode *test, ASTNode *iftrue,
                    ASTNode *iffalse, EnvNode *env, int stack_index) {
@@ -821,10 +835,6 @@ TEST(compile_add_four_ints) {
   // TODO: figure out how to collect ASTs
 }
 
-int encodeImmediateChar(char c) {
-  return (((unsigned int)c) << kCharShift) | kCharTag;
-}
-
 TEST(integer_to_char) {
   // (integer->char 65)
   ASTNode *node = list2(AST_new_atom("integer->char"), AST_new_fixnum(65));
@@ -1050,6 +1060,18 @@ TEST(compile_if_test_false) {
   EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(7));
 }
 
+TEST(return_heap_address) {
+  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRdi);
+  Buffer_ret(writer);
+  byte expected[] = {0x48, 0x89, 0xf8, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  uint64_t (*function)(uint64_t heap) =
+      (uint64_t(*)(uint64_t))writer->buf->address;
+  uint64_t result = function(0xdeadbeef);
+  cmp_ok(result, "==", 0xdeadbeef, __func__);
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -1077,6 +1099,7 @@ int run_tests() {
   run_test(test_compile_atom_in_env_emits_stack_index);
   run_test(test_compile_if_test_true);
   run_test(test_compile_if_test_false);
+  run_test(test_return_heap_address);
   done_testing();
 }
 
