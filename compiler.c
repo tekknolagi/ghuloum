@@ -188,13 +188,26 @@ void Buffer_add_reg_stack(BufferWriter *writer, Register dst, int8_t offset) {
   Buffer_write8(writer, 0x100 + offset);
 }
 
+static uint8_t encode_disp(int8_t disp) {
+  if (disp >= 0)
+    return disp;
+  return 0x100 + disp;
+}
+
 void Buffer_mov_rax_to_reg_disp(BufferWriter *writer, Register dst,
                                 int8_t disp) {
-  assert(disp >= 0 && "negative displacement unimplemented");
   Buffer_write8(writer, 0x48);
   Buffer_write8(writer, 0x89);
   Buffer_write8(writer, 0x40 + dst);
-  Buffer_write8(writer, disp);
+  Buffer_write8(writer, encode_disp(disp));
+}
+
+void Buffer_mov_reg_disp_to_rax(BufferWriter *writer, Register dst,
+                                int8_t disp) {
+  Buffer_write8(writer, 0x48);
+  Buffer_write8(writer, 0x8b);
+  Buffer_write8(writer, 0x40 + dst);
+  Buffer_write8(writer, encode_disp(disp));
 }
 
 void Buffer_sub_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
@@ -561,6 +574,20 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
       return AST_compile_cons(writer, operand1(args), operand2(args), env,
                               stack_index);
     }
+    if (AST_atom_equals_cstr(fnexpr, "car")) {
+      AST_compile_expr(writer, operand1(args), env, stack_index);
+      // Since heap addresses are biased by 1, the car of a cons cell is at
+      // offset -1, instead of 0.
+      Buffer_mov_reg_disp_to_rax(writer, /*src=*/kRax, -1);
+      return 0;
+    }
+    if (AST_atom_equals_cstr(fnexpr, "cdr")) {
+      AST_compile_expr(writer, operand1(args), env, stack_index);
+      // Since heap addresses are biased by 1, the cdr of a cons cell is at
+      // offset 7, instead of 8.
+      Buffer_mov_reg_disp_to_rax(writer, /*src=*/kRax, kWordSize - 1);
+      return 0;
+    }
     assert(0 && "unknown call");
   }
   assert(0 && "unknown call");
@@ -619,14 +646,16 @@ int call_intfunction(Buffer *buf) {
   return function();
 }
 
-void run_test(void (*test_body)(BufferWriter *)) {
+void run_test(void (*test_body)(BufferWriter *, uint64_t)) {
   Buffer buf;
   Buffer_init(&buf, 100);
+  void *heap = malloc(100 * kWordSize);
   {
     BufferWriter writer;
     BufferWriter_init(&writer, &buf);
-    test_body(&writer);
+    test_body(&writer, (uint64_t)heap);
   }
+  free(heap);
   Buffer_deinit(&buf);
 }
 
@@ -650,7 +679,9 @@ void run_test(void (*test_body)(BufferWriter *)) {
 #define EXPECT_CALL_EQUALS(buf, expected)                                      \
   cmp_ok(call_intfunction(buf), "==", expected, __func__)
 
-#define TEST(name) static void test_##name(BufferWriter *writer)
+#define TEST(name)                                                             \
+  static void test_##name(BufferWriter *writer,                                \
+                          __attribute__((unused)) uint64_t heap)
 
 TEST(write_bytes_manually) {
   byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
@@ -1102,6 +1133,7 @@ TEST(compile_cons) {
       list3(AST_new_atom("cons"), AST_new_fixnum(10), AST_new_fixnum(20));
   int compile_result = AST_compile_entry(writer, node);
   cmp_ok(compile_result, "==", 0, __func__);
+  // -> prologue
   // 0:  48 89 fe                mov    rsi,rdi
   // 3:  b8 28 00 00 00          mov    eax,0x28
   // 8:  48 89 46 00             mov    QWORD PTR [rsi+0x0],rax
@@ -1119,10 +1151,74 @@ TEST(compile_cons) {
   Buffer_make_executable(writer->buf);
   uint64_t (*function)(uint64_t heap) =
       (uint64_t(*)(uint64_t))writer->buf->address;
-  void *heap = malloc(100 * kWordSize);
   uint64_t result = function((uint64_t)heap);
   cmp_ok(result, "==", (uintptr_t)heap | 0x1UL, __func__);
-  free(heap);
+}
+
+TEST(compile_car) {
+  // (car (cons 10 20))
+  ASTNode *node =
+      list2(AST_new_atom("car"), list3(AST_new_atom("cons"), AST_new_fixnum(10),
+                                       AST_new_fixnum(20)));
+  int compile_result = AST_compile_entry(writer, node);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // -> prologue
+  // 0:  48 89 fe                mov    rsi,rdi
+  // -> cons
+  // 3:  b8 28 00 00 00          mov    eax,0x28
+  // 8:  48 89 46 00             mov    QWORD PTR [rsi+0x0],rax
+  // c:  b8 50 00 00 00          mov    eax,0x50
+  // 11: 48 89 46 08             mov    QWORD PTR [rsi+0x8],rax
+  // 15: 48 89 f0                mov    rax,rsi
+  // 18: 48 0d 01 00 00 00       or     rax,0x1
+  // 1e: 81 c6 10 00 00 00       add    esi,0x10
+  // -> car
+  // 24: 48 8b 40 ff             mov    rax,QWORD PTR [rax-0x1]
+  // 28: c3                      ret
+  byte expected[] = {0x48, 0x89, 0xfe, 0xb8, 0x28, 0x00, 0x00, 0x00, 0x48,
+                     0x89, 0x46, 0x00, 0xb8, 0x50, 0x00, 0x00, 0x00, 0x48,
+                     0x89, 0x46, 0x08, 0x48, 0x89, 0xf0, 0x48, 0x0d, 0x01,
+                     0x00, 0x00, 0x00, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
+                     0x48, 0x8b, 0x40, 0xff, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  uint64_t (*function)(uint64_t heap) =
+      (uint64_t(*)(uint64_t))writer->buf->address;
+  uint64_t result = function((uint64_t)heap);
+  cmp_ok(result, "==", encodeImmediateFixnum(10), __func__);
+}
+
+TEST(compile_cdr) {
+  // (cdr (cons 10 20))
+  ASTNode *node =
+      list2(AST_new_atom("cdr"), list3(AST_new_atom("cons"), AST_new_fixnum(10),
+                                       AST_new_fixnum(20)));
+  int compile_result = AST_compile_entry(writer, node);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // -> prologue
+  // 0:  48 89 fe                mov    rsi,rdi
+  // -> cons
+  // 3:  b8 28 00 00 00          mov    eax,0x28
+  // 8:  48 89 46 00             mov    QWORD PTR [rsi+0x0],rax
+  // c:  b8 50 00 00 00          mov    eax,0x50
+  // 11: 48 89 46 08             mov    QWORD PTR [rsi+0x8],rax
+  // 15: 48 89 f0                mov    rax,rsi
+  // 18: 48 0d 01 00 00 00       or     rax,0x1
+  // 1e: 81 c6 10 00 00 00       add    esi,0x10
+  // -> cdr
+  // 24: 48 8b 40 07             mov    rax,QWORD PTR [rax+0x7]
+  // 28: c3                      ret
+  byte expected[] = {0x48, 0x89, 0xfe, 0xb8, 0x28, 0x00, 0x00, 0x00, 0x48,
+                     0x89, 0x46, 0x00, 0xb8, 0x50, 0x00, 0x00, 0x00, 0x48,
+                     0x89, 0x46, 0x08, 0x48, 0x89, 0xf0, 0x48, 0x0d, 0x01,
+                     0x00, 0x00, 0x00, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
+                     0x48, 0x8b, 0x40, 0x07, 0xc3};
+  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  Buffer_make_executable(writer->buf);
+  uint64_t (*function)(uint64_t heap) =
+      (uint64_t(*)(uint64_t))writer->buf->address;
+  uint64_t result = function((uint64_t)heap);
+  cmp_ok(result, "==", encodeImmediateFixnum(20), __func__);
 }
 
 int run_tests() {
@@ -1154,6 +1250,8 @@ int run_tests() {
   run_test(test_compile_if_test_false);
   run_test(test_return_heap_address);
   run_test(test_compile_cons);
+  run_test(test_compile_car);
+  run_test(test_compile_cdr);
   done_testing();
 }
 
