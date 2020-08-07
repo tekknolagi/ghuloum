@@ -222,17 +222,6 @@ void Buffer_sub_reg_imm32(BufferWriter *writer, Register dst, int32_t src) {
   Buffer_write32(writer, src);
 }
 
-void Buffer_mov_reg_imm64(BufferWriter *writer, Register dst, int64_t src) {
-  Buffer_write8(writer, 0x48);
-  Buffer_write8(writer, 0xb8 + dst);
-  for (size_t i = 0; i < 8; i++) {
-    Buffer_write8(writer, (src >> (i * kBitsPerByte)) & 0xff);
-  }
-  Buffer_write8(writer, 0x00);
-  Buffer_write8(writer, 0x00);
-  Buffer_write8(writer, 0x00);
-}
-
 void Buffer_mov_reg_reg(BufferWriter *writer, Register dst, Register src) {
   Buffer_write8(writer, 0x48);
   Buffer_write8(writer, 0x89);
@@ -331,6 +320,19 @@ void Buffer_jmp_imm32(BufferWriter *writer, int32_t disp) {
   assert(disp > 0 && "negative disp unimplemented");
   Buffer_write8(writer, 0xe9);
   Buffer_write32(writer, disp);
+}
+
+static uint32_t encode_disp32(int32_t disp) {
+  if (disp >= 0)
+    return disp;
+  return 0x100000000 + disp;
+}
+
+// Relative call
+void Buffer_call_imm32(BufferWriter *writer, int32_t disp) {
+  disp -= 5; // sizeof call instruction (e8 + imm32)
+  Buffer_write8(writer, 0xe8);
+  Buffer_write32(writer, encode_disp32(disp));
 }
 
 void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
@@ -560,6 +562,40 @@ int AST_compile_cons(CompilerContext *ctx, ASTNode *car, ASTNode *cdr,
   return 0;
 }
 
+int AST_compile_code(CompilerContext *ctx, ASTNode *formals, ASTNode *body,
+                     int stack_index) {
+  if (formals == nil) {
+    int result = AST_compile_expr(ctx, body, stack_index);
+    if (result != 0) {
+      return result;
+    }
+    Buffer_ret(ctx->writer);
+    return 0;
+  }
+  ASTNode *name = AST_car(formals);
+  EnvNode new_locals = Env_init(name->value.atom, stack_index, ctx->locals);
+  CompilerContext new_ctx = CompilerContext_with_locals(ctx, &new_locals);
+  return AST_compile_code(&new_ctx, AST_cdr(formals), body,
+                          stack_index - kWordSize);
+}
+
+int AST_compile_labelcall(CompilerContext *ctx, int32_t code_pos, ASTNode *args,
+                          int stack_index) {
+  assert(args->type == kCons);
+  if (args == nil) {
+    int32_t disp = code_pos - BufferWriter_get_pos(ctx->writer);
+    Buffer_call_imm32(ctx->writer, disp);
+    return 0;
+  }
+  ASTNode *arg = AST_car(args);
+  int result = AST_compile_expr(ctx, arg, stack_index);
+  if (result != 0) {
+    return result;
+  }
+  return AST_compile_labelcall(ctx, code_pos, AST_cdr(args),
+                               stack_index - kWordSize);
+}
+
 int AST_compile_call(CompilerContext *ctx, ASTNode *fnexpr, ASTNode *args,
                      int stack_index) {
   if (AST_is_atom(fnexpr)) {
@@ -624,6 +660,43 @@ int AST_compile_call(CompilerContext *ctx, ASTNode *fnexpr, ASTNode *args,
       Buffer_mov_reg_disp_to_rax(ctx->writer, /*src=*/kRax, kWordSize - 1);
       return 0;
     }
+    if (AST_atom_equals_cstr(fnexpr, "code")) {
+      // The flow of control enters `code` in a new call frame. The stack looks
+      // like this:
+      //
+      // low addr
+      // --------
+      // .
+      // .
+      // .
+      // rsp   24: arg3
+      // rsp - 16: arg2
+      // rsp - 8 : arg1
+      // rsp     : return addr
+      // ~~~~~~~~~~~
+      // .
+      // .
+      // .
+      // ---------
+      // high addr
+      //
+      // Start stack_index over at -kWordSize -- the location of the first
+      // formal -- since the return address is at rsp.
+      return AST_compile_code(ctx, /*formals=*/operand1(args),
+                              /*body=*/operand2(args), -kWordSize);
+    }
+    if (AST_atom_equals_cstr(fnexpr, "labelcall")) {
+      ASTNode *label = operand1(args);
+      assert(AST_is_atom(label));
+      char *name = label->value.atom;
+      int32_t code_pos;
+      if (!Env_lookup(ctx->labels, name, &code_pos)) {
+        fprintf(stderr, "Unbound label: `%s'\n", name);
+        return -1;
+      }
+      return AST_compile_labelcall(ctx, /*code_pos=*/code_pos,
+                                   /*args=*/AST_cdr(args), stack_index);
+    }
     assert(0 && "unknown call");
   }
   assert(0 && "unknown call");
@@ -652,14 +725,16 @@ int AST_compile_expr(CompilerContext *ctx, ASTNode *node, int stack_index) {
     return 0;
   }
   }
+  assert(false && "unhandled expression type");
   return -1;
 }
 
 // TODO: naming confusing because we have no concept of functions, really
 int AST_compile_function(CompilerContext *ctx, ASTNode *node) {
   int result = AST_compile_expr(ctx, node, -kWordSize);
-  if (result != 0)
+  if (result != 0) {
     return result;
+  }
   Buffer_ret(ctx->writer);
   return 0;
 }
@@ -669,6 +744,88 @@ int AST_compile_entry(CompilerContext *ctx, ASTNode *node) {
   Buffer_mov_reg_reg(ctx->writer, /*dst=*/kRsi, /*src=*/kRdi);
   return AST_compile_function(ctx, node);
 }
+
+// labels is an environment mapping labels to code locations
+// this is different from other environments that track stack locations of
+// local variables and parameters
+// (labels ((lvar (code (...) ...)) ...)
+//         <exp>)
+// Example -2: No labels
+// 	(labels ()
+// 	  5)
+// Example -1: One label and don't use it
+// 	(labels (
+// 		(const (code () 5))
+// 	 	)
+// 	  5)
+// Example 0: No parameters
+// 	(labels (
+// 		(const (code () 5))
+// 	 	)
+// 	  (labelcall const))
+// Example 1: One param; return it
+// 	(labels (
+// 		(id (code (x) x))
+// 	 	)
+// 	  (labelcall id 5))
+// Example 2: Two params and use them
+// 	(labels (
+// 		(add (code (x y) (+ x y)))
+// 	 	)
+// 	  (labelcall add 1 2))
+// Example 3: Multiple labels in let* form (labels can use labels before them)
+// 	(labels (
+// 		(id (code (x) x))
+// 		(add (code (x y) (+ (labelcall id x) y)))
+// 	 	)
+// 	  (labelcall add 1 2))
+int AST_compile_labels(CompilerContext *ctx, ASTNode *bindings, ASTNode *body,
+                       int body_pos, int stack_index) {
+  if (bindings == nil) {
+    // Emit body and backpatch jump to it
+    BufferWriter_backpatch_displacement_imm32(ctx->writer, body_pos);
+    return AST_compile_entry(ctx, body);
+  }
+  ASTNode *binding = AST_car(bindings);
+  ASTNode *name = AST_car(binding);
+  assert(name->type == kAtom);
+  ASTNode *exp = AST_car(AST_cdr(binding));
+  EnvNode new_labels = Env_init(name->value.atom,
+                                BufferWriter_get_pos(ctx->writer), ctx->labels);
+  CompilerContext new_ctx = CompilerContext_with_labels(ctx, &new_labels);
+  int result = AST_compile_expr(&new_ctx, exp, stack_index);
+  if (result != 0) {
+    return result;
+  }
+  return AST_compile_labels(&new_ctx, /*bindings=*/AST_cdr(bindings), body,
+                            body_pos, stack_index);
+}
+
+ASTNode *AST_tag(ASTNode *node) {
+  assert(node->type == kCons);
+  ASTNode *tag = AST_car(node);
+  assert(tag->type == kAtom);
+  return tag;
+}
+
+// (labels ((lvar <lexp>) ...)
+//         <exp>)
+int AST_compile_prog(CompilerContext *ctx, ASTNode *prog) {
+  assert(prog->type == kCons);
+  ASTNode *tag = AST_tag(prog);
+  assert(tag->type == kAtom);
+  assert(AST_atom_equals_cstr(tag, "labels"));
+  ASTNode *args = AST_cdr(prog);
+  // Jump to body
+  Buffer_jmp_imm32(ctx->writer, 0x12345678);
+  int body_pos = BufferWriter_get_pos(ctx->writer);
+  // Emit labels & label-expressions
+  ASTNode *body = operand2(args);
+  return AST_compile_labels(ctx, /*bindings=*/operand1(args), body, body_pos,
+                            /*stack_index=*/-kWordSize);
+}
+
+// End AST
 
 // Testing
 
@@ -1259,6 +1416,130 @@ TEST(compile_cdr) {
   cmp_ok(result, "==", encodeImmediateFixnum(20), __func__);
 }
 
+TEST(compile_empty_labels) {
+  // (labels () 5)
+  ASTNode *prog = list3(AST_new_atom("labels"), nil, AST_new_fixnum(5));
+  int compile_result = AST_compile_prog(ctx, prog);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // jump 0x0; mov rsi, rdi; mov eax, imm(5); ret
+  byte expected[] = {0xe9, 0x00, 0x00, 0x00, 0x00,
+                     0x48, 0x89, 0xfe, 0xb8, encodeImmediateFixnum(5),
+                     0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
+}
+
+TEST(compile_code_with_no_params) {
+  // (code () 5)
+  ASTNode *node = list3(AST_new_atom("code"), nil, AST_new_fixnum(5));
+  int compile_result = AST_compile_function(ctx, node);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // mov eax, imm(5); ret
+  byte expected[] = {0xb8, encodeImmediateFixnum(5), 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+}
+
+TEST(compile_code_with_params) {
+  // (code (x y) (+ x y))
+  ASTNode *node =
+      list3(AST_new_atom("code"), list2(AST_new_atom("x"), AST_new_atom("y")),
+            list3(AST_new_atom("+"), AST_new_atom("x"), AST_new_atom("y")));
+  int compile_result = AST_compile_function(ctx, node);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // -> Load formal (y) into a new temporary stack location (rsp-0x18)
+  // 0:  48 8b 44 24 f0          mov    rax,QWORD PTR [rsp-0x10]
+  // 5:  48 89 44 24 e8          mov    QWORD PTR [rsp-0x18],rax
+  // -> Load formal (x) into rax
+  // a:  48 8b 44 24 f8          mov    rax,QWORD PTR [rsp-0x8]
+  // -> add
+  // f:  48 03 44 24 e8          add    rax,QWORD PTR [rsp-0x18]
+  // 14: c3                      ret
+  byte expected[] = {0x48, 0x8b, 0x44, 0x24, 0xf0, 0x48, 0x89,
+                     0x44, 0x24, 0xe8, 0x48, 0x8b, 0x44, 0x24,
+                     0xf8, 0x48, 0x03, 0x44, 0x24, 0xe8, 0xc3};
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+}
+
+TEST(compile_label_with_no_param_and_no_labelcall) {
+  // (labels ((const (code () 6))) 5)
+  ASTNode *labels =
+      list1(list2(AST_new_atom("const"),
+                  list3(AST_new_atom("code"), nil, AST_new_fixnum(6))));
+  ASTNode *prog = list3(AST_new_atom("labels"), labels, AST_new_fixnum(5));
+  int compile_result = AST_compile_prog(ctx, prog);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // -> jump to body
+  // 0:  e9 06 00 00 00          jmp    0xb
+  // -> code for (code () 5)
+  // 5:  b8 18 00 00 00          mov    eax,0x18
+  // a:  c3                      ret
+  // -> body:
+  // b:  48 89 fe                mov    rsi,rdi
+  // e:  b8 14 00 00 00          mov    eax,0x14
+  // 13: c3                      ret
+  byte expected[] = {
+      0xe9, 0x06, 0x00, 0x00, 0x00, 0xb8, encodeImmediateFixnum(6), 0x00, 0x00,
+      0x00, 0xc3, 0x48, 0x89, 0xfe, 0xb8, encodeImmediateFixnum(5), 0x00, 0x00,
+      0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
+}
+
+TEST(compile_labelcall_with_undefined_name) {
+  ASTNode *prog =
+      list2(AST_new_atom("labelcall"), AST_new_atom("nonexistent-label"));
+  int compile_result = AST_compile_function(ctx, prog);
+  cmp_ok(compile_result, "==", -1, __func__);
+}
+
+TEST(compile_labelcall_with_no_param) {
+  // (labels ((const (code () 5))) (labelcall const))
+  ASTNode *labels =
+      list1(list2(AST_new_atom("const"),
+                  list3(AST_new_atom("code"), nil, AST_new_fixnum(5))));
+  ASTNode *prog =
+      list3(AST_new_atom("labels"), labels,
+            list2(AST_new_atom("labelcall"), AST_new_atom("const")));
+  int compile_result = AST_compile_prog(ctx, prog);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // 0:  e9 06 00 00 00          jmp    0xb
+  // 5:  b8 14 00 00 00          mov    eax,0x14
+  // a:  c3                      ret
+  // b:  48 89 fe                mov    rsi,rdi
+  // e:  e8 f2 ff ff ff          call   0x5
+  // 13: c3                      ret
+  byte expected[] = {0xe9, 0x06, 0x00, 0x00, 0x00, 0xb8, 0x14,
+                     0x00, 0x00, 0x00, 0xc3, 0x48, 0x89, 0xfe,
+                     0xe8, 0xf2, 0xff, 0xff, 0xff, 0xc3};
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
+}
+
+TEST(compile_labelcall_with_one_param) {
+  // (labels ((id (code (x) x))) (labelcall id 5))
+  ASTNode *labels = list1(list2(
+      AST_new_atom("id"), list3(AST_new_atom("code"), list1(AST_new_atom("x")),
+                                AST_new_atom("x"))));
+  ASTNode *prog = list3(AST_new_atom("labels"), labels, AST_new_fixnum(5));
+  int compile_result = AST_compile_prog(ctx, prog);
+  cmp_ok(compile_result, "==", 0, __func__);
+  // 0:  e9 06 00 00 00          jmp    0xb
+  // 5:  48 8b 44 24 f8          mov    rax,QWORD PTR [rsp-0x8]
+  // a:  c3                      ret
+  // b:  48 89 fe                mov    rsi,rdi
+  // e:  b8 14 00 00 00          mov    eax,0x14
+  // 13: c3                      ret
+  byte expected[] = {0xe9, 0x06, 0x00, 0x00, 0x00, 0x48, 0x8b,
+                     0x44, 0x24, 0xf8, 0xc3, 0x48, 0x89, 0xfe,
+                     0xb8, 0x14, 0x00, 0x00, 0x00, 0xc3};
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -1290,6 +1571,13 @@ int run_tests() {
   run_test(test_compile_cons);
   run_test(test_compile_car);
   run_test(test_compile_cdr);
+  run_test(test_compile_empty_labels);
+  run_test(test_compile_code_with_no_params);
+  run_test(test_compile_code_with_params);
+  run_test(test_compile_label_with_no_param_and_no_labelcall);
+  run_test(test_compile_labelcall_with_undefined_name);
+  run_test(test_compile_labelcall_with_no_param);
+  run_test(test_compile_labelcall_with_one_param);
   done_testing();
 }
 
