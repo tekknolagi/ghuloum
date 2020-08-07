@@ -349,14 +349,15 @@ void Buffer_ret(BufferWriter *writer) { Buffer_write8(writer, 0xc3); }
 // this EnvNode and when the function returns, the name should not be
 // available/bound anyway. Eg:
 //
-// void AST_compile_let(..., ASTNode *bindings, ASTNode *body, EnvNode *env) {
+// void AST_compile_let(..., ASTNode *bindings, ASTNode *body) {
 //   if (bindings == nil) {
-//     AST_compile_expr(..., body, env);
+//     AST_compile_expr(..., body);
 //     return;
 //   }
 //   EnvNode new_env = bind_name(car(bindings));
-//   new_env.next = env;
-//   AST_compile_let(..., cdr(bindings), body, &new_env);
+//   new_env.next = ctx->locals;
+//   CompilerContext new_ctx = CompilerContext_with_locals(..., &new_env);
+//   AST_compile_let(&new_ctx, ..., cdr(bindings), body);
 // }
 //
 // In any case, the atoms/char* will live long enough since we don't have any
@@ -460,18 +461,53 @@ ASTNode *AST_cdr(ASTNode *cons) {
   return cons->value.cons.cdr;
 }
 
-int AST_compile_expr(BufferWriter *writer, ASTNode *node, EnvNode *env,
-                     int stack_index);
+// Compiler context
+
+// Does not include stack index because that is modified a lot when recursing
+// I may end up being annoyed about this for Env, too
+typedef struct {
+  BufferWriter *writer;
+  EnvNode *labels;
+  EnvNode *locals;
+  // TODO: add formals separately from locals?
+} CompilerContext;
+
+void CompilerContext_init(CompilerContext *ctx, BufferWriter *writer,
+                          EnvNode *labels, EnvNode *locals) {
+  assert(ctx != NULL);
+  ctx->writer = writer;
+  ctx->labels = labels;
+  ctx->locals = locals;
+}
+
+CompilerContext CompilerContext_with_labels(CompilerContext *ctx,
+                                            EnvNode *labels) {
+  CompilerContext result = *ctx;
+  result.labels = labels;
+  return result;
+}
+
+CompilerContext CompilerContext_with_locals(CompilerContext *ctx,
+                                            EnvNode *locals) {
+  CompilerContext result = *ctx;
+  result.locals = locals;
+  return result;
+}
+
+// End Compiler context
+
+// env is a map of variables to stack locations
+int AST_compile_expr(CompilerContext *ctx, ASTNode *node, int stack_index);
 
 ASTNode *operand1(ASTNode *args) { return AST_car(args); }
 ASTNode *operand2(ASTNode *args) { return AST_car(AST_cdr(args)); }
 ASTNode *operand3(ASTNode *args) { return AST_car(AST_cdr(AST_cdr(args))); }
 
-int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
-                    EnvNode *env, int stack_index) {
+int AST_compile_let(CompilerContext *ctx, ASTNode *bindings, ASTNode *body,
+                    int stack_index) {
   if (bindings == nil) {
     // Base case: no bindings. Emit the body.
-    AST_compile_expr(writer, body, env, stack_index);
+    AST_compile_expr(ctx, body, stack_index);
     return 0;
   }
   // Inductive case: some bindings. Emit code for the first binding, bind the
@@ -480,10 +516,11 @@ int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
   ASTNode *name = AST_car(first_binding);
   assert(name && name->type == kAtom && "name must be an atom");
   ASTNode *expr = AST_car(AST_cdr(first_binding));
-  AST_compile_expr(writer, expr, env, stack_index);
-  Buffer_mov_reg_to_stack(writer, kRax, stack_index);
-  EnvNode new_env = Env_init(name->value.atom, stack_index, env);
-  return AST_compile_let(writer, AST_cdr(bindings), body, &new_env,
+  AST_compile_expr(ctx, expr, stack_index);
+  Buffer_mov_reg_to_stack(ctx->writer, kRax, stack_index);
+  EnvNode new_locals = Env_init(name->value.atom, stack_index, ctx->locals);
+  CompilerContext new_ctx = CompilerContext_with_locals(ctx, &new_locals);
+  return AST_compile_let(&new_ctx, AST_cdr(bindings), body,
                          stack_index - kWordSize);
 }
 
@@ -492,100 +529,99 @@ int AST_compile_let(BufferWriter *writer, ASTNode *bindings, ASTNode *body,
 // rasm2 -D -b64 "48 89 44 24 f8 "
 //  -> or -d
 
-int AST_compile_if(BufferWriter *writer, ASTNode *test, ASTNode *iftrue,
-                   ASTNode *iffalse, EnvNode *env, int stack_index) {
-  AST_compile_expr(writer, test, env, stack_index);
-  Buffer_cmp_reg_imm32(writer, kRax, encodeImmediateBool(false));
-  Buffer_je_imm32(writer, 0x12345678);
-  int iffalse_pos = BufferWriter_get_pos(writer);
-  AST_compile_expr(writer, iftrue, env, stack_index);
-  Buffer_jmp_imm32(writer, 0x1a2b3c4d);
-  int end_pos = BufferWriter_get_pos(writer);
-  BufferWriter_backpatch_displacement_imm32(writer, iffalse_pos);
-  AST_compile_expr(writer, iffalse, env, stack_index);
-  BufferWriter_backpatch_displacement_imm32(writer, end_pos);
+int AST_compile_if(CompilerContext *ctx, ASTNode *test, ASTNode *iftrue,
+                   ASTNode *iffalse, int stack_index) {
+  AST_compile_expr(ctx, test, stack_index);
+  Buffer_cmp_reg_imm32(ctx->writer, kRax, encodeImmediateBool(false));
+  Buffer_je_imm32(ctx->writer, 0x12345678);
+  int iffalse_pos = BufferWriter_get_pos(ctx->writer);
+  AST_compile_expr(ctx, iftrue, stack_index);
+  Buffer_jmp_imm32(ctx->writer, 0x1a2b3c4d);
+  int end_pos = BufferWriter_get_pos(ctx->writer);
+  BufferWriter_backpatch_displacement_imm32(ctx->writer, iffalse_pos);
+  AST_compile_expr(ctx, iffalse, stack_index);
+  BufferWriter_backpatch_displacement_imm32(ctx->writer, end_pos);
   return 0;
 }
 
-int AST_compile_cons(BufferWriter *writer, ASTNode *car, ASTNode *cdr,
-                     EnvNode *env, int stack_index) {
-  AST_compile_expr(writer, car, env, stack_index - kWordSize);
+int AST_compile_cons(CompilerContext *ctx, ASTNode *car, ASTNode *cdr,
+                     int stack_index) {
+  AST_compile_expr(ctx, car, stack_index - kWordSize);
   // Set car
-  Buffer_mov_rax_to_reg_disp(writer, kRsi, 0);
-  AST_compile_expr(writer, cdr, env, stack_index);
+  Buffer_mov_rax_to_reg_disp(ctx->writer, kRsi, 0);
+  AST_compile_expr(ctx, cdr, stack_index);
   // Set cdr
-  Buffer_mov_rax_to_reg_disp(writer, kRsi, kWordSize);
+  Buffer_mov_rax_to_reg_disp(ctx->writer, kRsi, kWordSize);
   // Tag the pointer
-  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRsi);
-  Buffer_or_reg_imm32(writer, /*dst=*/kRax, 1);
+  Buffer_mov_reg_reg(ctx->writer, /*dst=*/kRax, /*src=*/kRsi);
+  Buffer_or_reg_imm32(ctx->writer, /*dst=*/kRax, 1);
   // Bump heap
-  Buffer_add_reg_imm32(writer, /*dst=*/kRsi, 2 * kWordSize);
+  Buffer_add_reg_imm32(ctx->writer, /*dst=*/kRsi, 2 * kWordSize);
   return 0;
 }
 
-int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
-                     EnvNode *env, int stack_index) {
+int AST_compile_call(CompilerContext *ctx, ASTNode *fnexpr, ASTNode *args,
+                     int stack_index) {
   if (AST_is_atom(fnexpr)) {
     // Assumed to be a primcall
     if (AST_atom_equals_cstr(fnexpr, "add1")) {
-      AST_compile_expr(writer, operand1(args), env, stack_index);
-      Buffer_add_reg_imm32(writer, kRax, encodeImmediateFixnum(1));
+      AST_compile_expr(ctx, operand1(args), stack_index);
+      Buffer_add_reg_imm32(ctx->writer, kRax, encodeImmediateFixnum(1));
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "sub1")) {
-      AST_compile_expr(writer, operand1(args), env, stack_index);
-      Buffer_sub_reg_imm32(writer, kRax, encodeImmediateFixnum(1));
+      AST_compile_expr(ctx, operand1(args), stack_index);
+      Buffer_sub_reg_imm32(ctx->writer, kRax, encodeImmediateFixnum(1));
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "integer->char")) {
-      AST_compile_expr(writer, operand1(args), env, stack_index);
-      Buffer_shl_reg(writer, kRax, /*bits=*/kCharShift - kFixnumShift);
+      AST_compile_expr(ctx, operand1(args), stack_index);
+      Buffer_shl_reg(ctx->writer, kRax, /*bits=*/kCharShift - kFixnumShift);
       // TODO: generate more compact code since we know we're only or-ing with a
       // byte
-      Buffer_or_reg_imm32(writer, kRax, kCharTag);
+      Buffer_or_reg_imm32(ctx->writer, kRax, kCharTag);
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "zero?")) {
-      AST_compile_expr(writer, operand1(args), env, stack_index);
-      Buffer_cmp_reg_imm32(writer, kRax, 0);
-      Buffer_mov_reg_imm32(writer, kRax, 0);
-      Buffer_setcc_reg(writer, kEqual, kAl);
-      Buffer_shl_reg(writer, kRax, kBoolShift);
-      Buffer_or_reg_imm32(writer, kRax, kBoolTag);
+      AST_compile_expr(ctx, operand1(args), stack_index);
+      Buffer_cmp_reg_imm32(ctx->writer, kRax, 0);
+      Buffer_mov_reg_imm32(ctx->writer, kRax, 0);
+      Buffer_setcc_reg(ctx->writer, kEqual, kAl);
+      Buffer_shl_reg(ctx->writer, kRax, kBoolShift);
+      Buffer_or_reg_imm32(ctx->writer, kRax, kBoolTag);
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "+")) {
-      AST_compile_expr(writer, operand2(args), env, stack_index);
-      Buffer_mov_reg_to_stack(writer, kRax, /*offset=*/stack_index);
-      AST_compile_expr(writer, operand1(args), env, stack_index - kWordSize);
-      Buffer_add_reg_stack(writer, kRax, /*offset=*/stack_index);
+      AST_compile_expr(ctx, operand2(args), stack_index);
+      Buffer_mov_reg_to_stack(ctx->writer, kRax, /*offset=*/stack_index);
+      AST_compile_expr(ctx, operand1(args), stack_index - kWordSize);
+      Buffer_add_reg_stack(ctx->writer, kRax, /*offset=*/stack_index);
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "let")) {
-      return AST_compile_let(writer, /*bindings=*/operand1(args),
-                             /*body=*/operand2(args), env, stack_index);
+      return AST_compile_let(ctx, /*bindings=*/operand1(args),
+                             /*body=*/operand2(args), stack_index);
     }
     if (AST_atom_equals_cstr(fnexpr, "if")) {
       // TODO: in if, rewrite empty iffalse => '()
-      return AST_compile_if(writer, operand1(args), operand2(args),
-                            operand3(args), env, stack_index);
+      return AST_compile_if(ctx, operand1(args), operand2(args), operand3(args),
+                            stack_index);
     }
     if (AST_atom_equals_cstr(fnexpr, "cons")) {
-      return AST_compile_cons(writer, operand1(args), operand2(args), env,
-                              stack_index);
+      return AST_compile_cons(ctx, operand1(args), operand2(args), stack_index);
     }
     if (AST_atom_equals_cstr(fnexpr, "car")) {
-      AST_compile_expr(writer, operand1(args), env, stack_index);
+      AST_compile_expr(ctx, operand1(args), stack_index);
       // Since heap addresses are biased by 1, the car of a cons cell is at
       // offset -1, instead of 0.
-      Buffer_mov_reg_disp_to_rax(writer, /*src=*/kRax, -1);
+      Buffer_mov_reg_disp_to_rax(ctx->writer, /*src=*/kRax, -1);
       return 0;
     }
     if (AST_atom_equals_cstr(fnexpr, "cdr")) {
-      AST_compile_expr(writer, operand1(args), env, stack_index);
+      AST_compile_expr(ctx, operand1(args), stack_index);
       // Since heap addresses are biased by 1, the cdr of a cons cell is at
       // offset 7, instead of 8.
-      Buffer_mov_reg_disp_to_rax(writer, /*src=*/kRax, kWordSize - 1);
+      Buffer_mov_reg_disp_to_rax(ctx->writer, /*src=*/kRax, kWordSize - 1);
       return 0;
     }
     assert(0 && "unknown call");
@@ -593,48 +629,46 @@ int AST_compile_call(BufferWriter *writer, ASTNode *fnexpr, ASTNode *args,
   assert(0 && "unknown call");
 }
 
-int AST_compile_expr(BufferWriter *writer, ASTNode *node, EnvNode *env,
-                     int stack_index) {
+int AST_compile_expr(CompilerContext *ctx, ASTNode *node, int stack_index) {
   switch (node->type) {
   case kFixnum: {
     uint32_t value = (uint32_t)node->value.fixnum;
-    Buffer_mov_reg_imm32(writer, kRax, encodeImmediateFixnum(value));
+    Buffer_mov_reg_imm32(ctx->writer, kRax, encodeImmediateFixnum(value));
     return 0;
   }
   case kCons: {
     // Assumed to be in the form (<expr> <op1> <op2> ...)
-    return AST_compile_call(writer, AST_car(node), AST_cdr(node), env,
-                            stack_index);
+    return AST_compile_call(ctx, AST_car(node), AST_cdr(node), stack_index);
   }
   case kAtom: {
+    // TODO: confusing that it shadows the parameter. fix
     int32_t stack_index;
     char *name = node->value.atom;
-    if (!Env_lookup(env, name, &stack_index)) {
+    if (!Env_lookup(ctx->locals, name, &stack_index)) {
       fprintf(stderr, "Unbound variable: `%s'\n", name);
       return -1;
     }
-    Buffer_mov_stack_to_reg(writer, kRax, stack_index);
+    Buffer_mov_stack_to_reg(ctx->writer, kRax, stack_index);
     return 0;
   }
   }
   return -1;
 }
 
-int AST_compile_function(BufferWriter *writer, ASTNode *node) {
-  int result = AST_compile_expr(writer, node, /*env=*/NULL, -kWordSize);
+// TODO: naming confusing because we have no concept of functions, really
+int AST_compile_function(CompilerContext *ctx, ASTNode *node) {
+  int result = AST_compile_expr(ctx, node, -kWordSize);
   if (result != 0)
     return result;
-  Buffer_ret(writer);
+  Buffer_ret(ctx->writer);
   return 0;
 }
 
-int AST_compile_entry(BufferWriter *writer, ASTNode *node) {
+int AST_compile_entry(CompilerContext *ctx, ASTNode *node) {
   // Save the heap in rsi, our global heap pointer
-  Buffer_mov_reg_reg(writer, /*dst=*/kRsi, /*src=*/kRdi);
-  return AST_compile_function(writer, node);
+  Buffer_mov_reg_reg(ctx->writer, /*dst=*/kRsi, /*src=*/kRdi);
+  return AST_compile_function(ctx, node);
 }
-
-// End AST
 
 // Testing
 
@@ -646,14 +680,17 @@ int call_intfunction(Buffer *buf) {
   return function();
 }
 
-void run_test(void (*test_body)(BufferWriter *, uint64_t)) {
+void run_test(void (*test_body)(CompilerContext *, uint64_t)) {
   Buffer buf;
   Buffer_init(&buf, 100);
   void *heap = malloc(100 * kWordSize);
   {
     BufferWriter writer;
     BufferWriter_init(&writer, &buf);
-    test_body(&writer, (uint64_t)heap);
+    CompilerContext ctx;
+    CompilerContext_init(&ctx, /*writer=*/&writer, /*labels=*/NULL,
+                         /*locals=*/NULL);
+    test_body(&ctx, (uint64_t)heap);
   }
   free(heap);
   Buffer_deinit(&buf);
@@ -669,7 +706,7 @@ void run_test(void (*test_body)(BufferWriter *, uint64_t)) {
         printf("%.2x ", arr[i]);                                               \
       }                                                                        \
       printf("\n           Found:    ");                                       \
-      for (size_t i = 0; i < writer->pos; i++) {                               \
+      for (size_t i = 0; i < ctx->writer->pos; i++) {                          \
         printf("%.2x ", buf->address[i]);                                      \
       }                                                                        \
       printf("\n");                                                            \
@@ -680,71 +717,71 @@ void run_test(void (*test_body)(BufferWriter *, uint64_t)) {
   cmp_ok(call_intfunction(buf), "==", expected, __func__)
 
 #define TEST(name)                                                             \
-  static void test_##name(BufferWriter *writer,                                \
+  static void test_##name(CompilerContext *ctx,                                \
                           __attribute__((unused)) uint64_t heap)
 
 TEST(write_bytes_manually) {
   byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
-  Buffer_write_arr(writer, arr, sizeof arr);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 42);
+  Buffer_write_arr(ctx->writer, arr, sizeof arr);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, 42);
 }
 
 TEST(write_bytes_manually2) {
   byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xff, 0xc0, 0xc3};
-  Buffer_write_arr(writer, arr, sizeof arr);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 43);
+  Buffer_write_arr(ctx->writer, arr, sizeof arr);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, 43);
 }
 
 TEST(mov_rax_imm32) {
-  Buffer_mov_reg_imm32(writer, kRax, 42);
+  Buffer_mov_reg_imm32(ctx->writer, kRax, 42);
   byte expected[] = {0xb8, 0x2a, 0x00, 0x00, 0x00};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
 }
 
 TEST(mov_rcx_imm32) {
-  Buffer_mov_reg_imm32(writer, kRcx, 42);
+  Buffer_mov_reg_imm32(ctx->writer, kRcx, 42);
   byte expected[] = {0xb9, 0x2a, 0x00, 0x00, 0x00};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
 }
 
 TEST(mov_inc) {
-  Buffer_mov_reg_imm32(writer, kRax, 42);
-  Buffer_inc_reg(writer, kRax);
-  Buffer_ret(writer);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, 43);
+  Buffer_mov_reg_imm32(ctx->writer, kRax, 42);
+  Buffer_inc_reg(ctx->writer, kRax);
+  Buffer_ret(ctx->writer);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, 43);
 }
 
 TEST(mov_rax_rax) {
-  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRax);
+  Buffer_mov_reg_reg(ctx->writer, /*dst=*/kRax, /*src=*/kRax);
   byte expected[] = {0x48, 0x89, 0xc0};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
 }
 
 TEST(mov_rax_rsi) {
-  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRsi);
+  Buffer_mov_reg_reg(ctx->writer, /*dst=*/kRax, /*src=*/kRsi);
   byte expected[] = {0x48, 0x89, 0xf0};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
 }
 
 TEST(mov_rdi_rbp) {
-  Buffer_mov_reg_reg(writer, /*dst=*/kRdi, /*src=*/kRbp);
+  Buffer_mov_reg_reg(ctx->writer, /*dst=*/kRdi, /*src=*/kRbp);
   byte expected[] = {0x48, 0x89, 0xef};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
 }
 
 TEST(compile_fixnum) {
   // 123
   ASTNode *node = AST_new_fixnum(123);
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, 123; ret
   byte expected[] = {0xb8, 0xec, 0x01, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(123));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(123));
   free(node);
 }
 
@@ -763,28 +800,28 @@ ASTNode *list4(ASTNode *e0, ASTNode *e1, ASTNode *e2, ASTNode *e3) {
 TEST(compile_primcall_add1) {
   // (add1 5)
   ASTNode *node = list2(AST_new_atom("add1"), AST_new_fixnum(5));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); add eax, imm(1); ret
   byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x05,
                      0x04, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(6));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(6));
   // TODO: figure out how to collect ASTs
 }
 
 TEST(compile_primcall_sub1) {
   // (sub1 5)
   ASTNode *node = list2(AST_new_atom("sub1"), AST_new_fixnum(5));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); sub eax, imm(1); ret
   byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x2d,
                      0x04, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(4));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(4));
   // TODO: figure out how to collect ASTs
 }
 
@@ -792,14 +829,14 @@ TEST(compile_primcall_add1_sub1) {
   // (sub1 (add1 5))
   ASTNode *node = list2(AST_new_atom("sub1"),
                         list2(AST_new_atom("add1"), AST_new_fixnum(5)));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); add eax, imm(1); sub eax, imm(1); ret
   byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x05, 0x04, 0x00,
                      0x00, 0x00, 0x2d, 0x04, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(5));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
   // TODO: figure out how to collect ASTs
 }
 
@@ -807,14 +844,14 @@ TEST(compile_primcall_sub1_add1) {
   // (add1 (sub1 5))
   ASTNode *node = list2(AST_new_atom("add1"),
                         list2(AST_new_atom("sub1"), AST_new_fixnum(5)));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(5); sub eax, imm(1); add eax, imm(1); ret
   byte expected[] = {0xb8, 0x14, 0x00, 0x00, 0x00, 0x2d, 0x04, 0x00,
                      0x00, 0x00, 0x05, 0x04, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(5));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
   // TODO: figure out how to collect ASTs
 }
 
@@ -822,15 +859,15 @@ TEST(compile_add_two_ints) {
   // (+ 1 2)
   ASTNode *node =
       list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(2); mov [rsp-8], rax; mov rax, imm(1); add rax, [rsp-8]
   byte expected[] = {0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x89,
                      0x44, 0x24, 0xf8, 0xb8, 0x04, 0x00, 0x00,
                      0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(3));
   // TODO: figure out how to collect ASTs
 }
 
@@ -839,7 +876,7 @@ TEST(compile_add_three_ints) {
   ASTNode *node =
       list3(AST_new_atom("+"), AST_new_fixnum(1),
             list3(AST_new_atom("+"), AST_new_fixnum(2), AST_new_fixnum(3)));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 0c 00 00 00          mov    eax,0xc
   // 5:  48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
@@ -853,9 +890,9 @@ TEST(compile_add_three_ints) {
                      0xf8, 0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x03, 0x44,
                      0x24, 0xf8, 0x48, 0x89, 0x44, 0x24, 0xf8, 0xb8, 0x04,
                      0x00, 0x00, 0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(6));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(6));
   // TODO: figure out how to collect ASTs
 }
 
@@ -865,7 +902,7 @@ TEST(compile_add_four_ints) {
       list3(AST_new_atom("+"),
             list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)),
             list3(AST_new_atom("+"), AST_new_fixnum(3), AST_new_fixnum(4)));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 10 00 00 00          mov    eax,0x10
   // 5:  48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
@@ -884,16 +921,16 @@ TEST(compile_add_four_ints) {
                      0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0xf0, 0xb8,
                      0x04, 0x00, 0x00, 0x00, 0x48, 0x03, 0x44, 0x24, 0xf0,
                      0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(10));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(10));
   // TODO: figure out how to collect ASTs
 }
 
 TEST(integer_to_char) {
   // (integer->char 65)
   ASTNode *node = list2(AST_new_atom("integer->char"), AST_new_fixnum(65));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 04 01 00 00          mov    eax,0x104
   // 5:  48 c1 e0 06             shl    rax,0x6
@@ -901,9 +938,9 @@ TEST(integer_to_char) {
   // f:  c3                      ret
   byte expected[] = {0xb8, 0x04, 0x01, 0x00, 0x00, 0x48, 0xc1, 0xe0,
                      0x06, 0x48, 0x0d, 0x0f, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateChar('A'));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateChar('A'));
   // TODO: figure out how to collect ASTs
 }
 
@@ -915,7 +952,7 @@ TEST(zerop_with_zero_returns_true) {
   // (zero? (sub1 (add1 0)))
   ASTNode *node =
       call1("zero?", call1("sub1", call1("add1", AST_new_fixnum(0))));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // -> prelude
   // 0:  b8 00 00 00 00          mov    eax,0x0
@@ -933,9 +970,9 @@ TEST(zerop_with_zero_returns_true) {
                      0x3d, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00,
                      0x00, 0x00, 0x0f, 0x94, 0xc0, 0x48, 0xc1, 0xe0,
                      0x07, 0x48, 0x0d, 0x1f, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateBool(true));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateBool(true));
   // TODO: figure out how to collect ASTs
 }
 
@@ -943,7 +980,7 @@ TEST(zerop_with_non_zero_returns_false) {
   // (zero? (sub1 (add1 0)))
   ASTNode *node =
       call1("zero?", call1("sub1", call1("add1", AST_new_fixnum(1))));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // -> prelude
   // 0:  b8 00 00 00 00          mov    eax,0x0
@@ -961,9 +998,9 @@ TEST(zerop_with_non_zero_returns_false) {
                      0x3d, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00,
                      0x00, 0x00, 0x0f, 0x94, 0xc0, 0x48, 0xc1, 0xe0,
                      0x07, 0x48, 0x0d, 0x1f, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateBool(false));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateBool(false));
   // TODO: figure out how to collect ASTs
 }
 
@@ -973,15 +1010,15 @@ TEST(let_with_no_bindings) {
       AST_new_atom("let"),
       /*bindings*/ nil,
       /*body*/ list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // mov eax, imm(2); mov [rsp-8], rax; mov rax, imm(1); add rax, [rsp-8]
   byte expected[] = {0xb8, 0x08, 0x00, 0x00, 0x00, 0x48, 0x89,
                      0x44, 0x24, 0xf8, 0xb8, 0x04, 0x00, 0x00,
                      0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(3));
   // TODO: figure out how to collect ASTs
 }
 
@@ -991,7 +1028,7 @@ TEST(let_with_one_binding) {
       AST_new_atom("let"),
       /*bindings*/ list1(list2(AST_new_atom("x"), AST_new_fixnum(2))),
       /*body*/ list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_atom("x")));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 08 00 00 00          mov    eax,0x08
   // 5:  48 89 44 24 f8          mov    QWORD PTR [rsp-0x8],rax
@@ -1004,26 +1041,27 @@ TEST(let_with_one_binding) {
                      0x24, 0xf8, 0x48, 0x8b, 0x44, 0x24, 0xf8, 0x48,
                      0x89, 0x44, 0x24, 0xf0, 0xb8, 0x04, 0x00, 0x00,
                      0x00, 0x48, 0x03, 0x44, 0x24, 0xf0, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(3));
   // TODO: figure out how to collect ASTs
 }
 
 TEST(compile_atom_with_undefined_variable) {
   ASTNode *node = AST_new_atom("foo");
-  int result = AST_compile_expr(writer, node, /*env=*/NULL, /*stack_index=*/0);
+  int result = AST_compile_expr(ctx, node, /*stack_index=*/0);
   cmp_ok(result, "==", -1, __func__);
   // TODO: figure out how to collect ASTs
 }
 
 TEST(compile_atom_in_env_emits_stack_index) {
   ASTNode *node = AST_new_atom("foo");
-  EnvNode env = Env_init("foo", -34, /*next=*/NULL);
-  int result = AST_compile_expr(writer, node, &env, /*stack_index=*/0);
+  EnvNode locals = Env_init("foo", -34, /*next=*/NULL);
+  CompilerContext new_ctx = CompilerContext_with_locals(ctx, &locals);
+  int result = AST_compile_expr(&new_ctx, node, /*stack_index=*/0);
   cmp_ok(result, "==", 0, __func__);
   byte expected[] = {0x48, 0x8b, 0x44, 0x24, 0x100 - 34};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
   // TODO: figure out how to collect ASTs
 }
 
@@ -1033,7 +1071,7 @@ TEST(compile_if_test_true) {
       list4(AST_new_atom("if"), list2(AST_new_atom("zero?"), AST_new_fixnum(0)),
             list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)),
             list3(AST_new_atom("+"), AST_new_fixnum(3), AST_new_fixnum(4)));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 00 00 00 00          mov    eax,0x0
   // -> zero?
@@ -1066,9 +1104,9 @@ TEST(compile_if_test_true) {
                      0xf8, 0xe9, 0x14, 0x00, 0x00, 0x00, 0xb8, 0x10, 0x00, 0x00,
                      0x00, 0x48, 0x89, 0x44, 0x24, 0xf8, 0xb8, 0x0c, 0x00, 0x00,
                      0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(3));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(3));
 }
 
 TEST(compile_if_test_false) {
@@ -1077,7 +1115,7 @@ TEST(compile_if_test_false) {
       list4(AST_new_atom("if"), list2(AST_new_atom("zero?"), AST_new_fixnum(1)),
             list3(AST_new_atom("+"), AST_new_fixnum(1), AST_new_fixnum(2)),
             list3(AST_new_atom("+"), AST_new_fixnum(3), AST_new_fixnum(4)));
-  int result = AST_compile_function(writer, node);
+  int result = AST_compile_function(ctx, node);
   cmp_ok(result, "==", 0, __func__);
   // 0:  b8 04 00 00 00          mov    eax,imm(0x1)
   // -> zero?
@@ -1110,19 +1148,19 @@ TEST(compile_if_test_false) {
                      0xf8, 0xe9, 0x14, 0x00, 0x00, 0x00, 0xb8, 0x10, 0x00, 0x00,
                      0x00, 0x48, 0x89, 0x44, 0x24, 0xf8, 0xb8, 0x0c, 0x00, 0x00,
                      0x00, 0x48, 0x03, 0x44, 0x24, 0xf8, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
-  EXPECT_CALL_EQUALS(writer->buf, encodeImmediateFixnum(7));
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(7));
 }
 
 TEST(return_heap_address) {
-  Buffer_mov_reg_reg(writer, /*dst=*/kRax, /*src=*/kRdi);
-  Buffer_ret(writer);
+  Buffer_mov_reg_reg(ctx->writer, /*dst=*/kRax, /*src=*/kRdi);
+  Buffer_ret(ctx->writer);
   byte expected[] = {0x48, 0x89, 0xf8, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
   uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))writer->buf->address;
+      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
   uint64_t result = function(0xdeadbeef);
   cmp_ok(result, "==", 0xdeadbeef, __func__);
 }
@@ -1131,7 +1169,7 @@ TEST(compile_cons) {
   // (cons 10 20)
   ASTNode *node =
       list3(AST_new_atom("cons"), AST_new_fixnum(10), AST_new_fixnum(20));
-  int compile_result = AST_compile_entry(writer, node);
+  int compile_result = AST_compile_entry(ctx, node);
   cmp_ok(compile_result, "==", 0, __func__);
   // -> prologue
   // 0:  48 89 fe                mov    rsi,rdi
@@ -1147,10 +1185,10 @@ TEST(compile_cons) {
                      0x46, 0x00, 0xb8, 0x50, 0x00, 0x00, 0x00, 0x48, 0x89, 0x46,
                      0x08, 0x48, 0x89, 0xf0, 0x48, 0x0d, 0x01, 0x00, 0x00, 0x00,
                      0x81, 0xc6, 0x10, 0x00, 0x00, 0x00, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
   uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))writer->buf->address;
+      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
   uint64_t result = function((uint64_t)heap);
   cmp_ok(result, "==", (uintptr_t)heap | 0x1UL, __func__);
 }
@@ -1160,7 +1198,7 @@ TEST(compile_car) {
   ASTNode *node =
       list2(AST_new_atom("car"), list3(AST_new_atom("cons"), AST_new_fixnum(10),
                                        AST_new_fixnum(20)));
-  int compile_result = AST_compile_entry(writer, node);
+  int compile_result = AST_compile_entry(ctx, node);
   cmp_ok(compile_result, "==", 0, __func__);
   // -> prologue
   // 0:  48 89 fe                mov    rsi,rdi
@@ -1180,10 +1218,10 @@ TEST(compile_car) {
                      0x89, 0x46, 0x08, 0x48, 0x89, 0xf0, 0x48, 0x0d, 0x01,
                      0x00, 0x00, 0x00, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
                      0x48, 0x8b, 0x40, 0xff, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
   uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))writer->buf->address;
+      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
   uint64_t result = function((uint64_t)heap);
   cmp_ok(result, "==", encodeImmediateFixnum(10), __func__);
 }
@@ -1193,7 +1231,7 @@ TEST(compile_cdr) {
   ASTNode *node =
       list2(AST_new_atom("cdr"), list3(AST_new_atom("cons"), AST_new_fixnum(10),
                                        AST_new_fixnum(20)));
-  int compile_result = AST_compile_entry(writer, node);
+  int compile_result = AST_compile_entry(ctx, node);
   cmp_ok(compile_result, "==", 0, __func__);
   // -> prologue
   // 0:  48 89 fe                mov    rsi,rdi
@@ -1213,10 +1251,10 @@ TEST(compile_cdr) {
                      0x89, 0x46, 0x08, 0x48, 0x89, 0xf0, 0x48, 0x0d, 0x01,
                      0x00, 0x00, 0x00, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
                      0x48, 0x8b, 0x40, 0x07, 0xc3};
-  EXPECT_EQUALS_BYTES(writer->buf, expected);
-  Buffer_make_executable(writer->buf);
+  EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+  Buffer_make_executable(ctx->writer->buf);
   uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))writer->buf->address;
+      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
   uint64_t result = function((uint64_t)heap);
   cmp_ok(result, "==", encodeImmediateFixnum(20), __func__);
 }
