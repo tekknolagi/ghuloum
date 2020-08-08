@@ -84,6 +84,7 @@ int Buffer_make_executable(Buffer *buf) {
 
 void Buffer_at_put(Buffer *buf, size_t pos, byte b) { buf->address[pos] = b; }
 
+// TODO: dynamically expand buffer when space runs out
 typedef struct {
   Buffer *buf;
   size_t pos;
@@ -407,6 +408,7 @@ typedef struct {
   struct ASTNode *cdr;
 } ASTCons;
 
+// TODO: tag AST nodes as values. immediate ints, etc
 typedef struct ASTNode {
   ASTNodeType type;
   union {
@@ -899,12 +901,17 @@ int AST_compile_prog(CompilerContext *ctx, ASTNode *prog) {
 
 // Testing
 
-int call_intfunction(Buffer *buf) {
+typedef uint64_t (*EntryFunction)(uint64_t);
+
+uint64_t Testing_call_entry(Buffer *buf, uint64_t heap) {
   assert(buf != NULL);
   assert(buf->address != NULL);
   assert(buf->state == kExecutable);
-  int (*function)() = (int (*)())buf->address;
-  return function();
+  // The pointer-pointer cast is allowed but the underlying
+  // data-to-function-pointer back-and-forth is only guaranteed to work on
+  // POSIX systems (because of eg dlsym).
+  EntryFunction function = *(EntryFunction *)(&buf->address);
+  return function(heap);
 }
 
 void run_test(void (*test_body)(CompilerContext *, uint64_t)) {
@@ -941,11 +948,19 @@ void run_test(void (*test_body)(CompilerContext *, uint64_t)) {
   }
 
 #define EXPECT_CALL_EQUALS(buf, expected)                                      \
-  cmp_ok(call_intfunction(buf), "==", expected, __func__)
+  cmp_ok(Testing_call_entry(buf, heap), "==", expected, __func__)
 
 #define TEST(name)                                                             \
   static void test_##name(CompilerContext *ctx,                                \
                           __attribute__((unused)) uint64_t heap)
+
+uint64_t Run_from_cstr(char *input, CompilerContext *ctx, uint64_t heap) {
+  ASTNode *node = Reader_read(input);
+  int compile_result = AST_compile_entry(ctx, node);
+  cmp_ok(compile_result, "==", 0, __func__);
+  Buffer_make_executable(ctx->writer->buf);
+  return Testing_call_entry(ctx->writer->buf, heap);
+}
 
 TEST(write_bytes_manually) {
   byte arr[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
@@ -1386,9 +1401,7 @@ TEST(return_heap_address) {
   byte expected[] = {0x48, 0x89, 0xf8, 0xc3};
   EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
   Buffer_make_executable(ctx->writer->buf);
-  uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
-  uint64_t result = function(0xdeadbeef);
+  uint64_t result = Testing_call_entry(ctx->writer->buf, 0xdeadbeef);
   cmp_ok(result, "==", 0xdeadbeef, __func__);
 }
 
@@ -1414,9 +1427,7 @@ TEST(compile_cons) {
                      0x81, 0xc6, 0x10, 0x00, 0x00, 0x00, 0xc3};
   EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
   Buffer_make_executable(ctx->writer->buf);
-  uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
-  uint64_t result = function((uint64_t)heap);
+  uint64_t result = Testing_call_entry(ctx->writer->buf, heap);
   cmp_ok(result, "==", (uintptr_t)heap | 0x1UL, __func__);
 }
 
@@ -1447,9 +1458,7 @@ TEST(compile_car) {
                      0x48, 0x8b, 0x40, 0xff, 0xc3};
   EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
   Buffer_make_executable(ctx->writer->buf);
-  uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
-  uint64_t result = function((uint64_t)heap);
+  uint64_t result = Testing_call_entry(ctx->writer->buf, heap);
   cmp_ok(result, "==", encodeImmediateFixnum(10), __func__);
 }
 
@@ -1480,9 +1489,7 @@ TEST(compile_cdr) {
                      0x48, 0x8b, 0x40, 0x07, 0xc3};
   EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
   Buffer_make_executable(ctx->writer->buf);
-  uint64_t (*function)(uint64_t heap) =
-      (uint64_t(*)(uint64_t))ctx->writer->buf->address;
-  uint64_t result = function((uint64_t)heap);
+  uint64_t result = Testing_call_entry(ctx->writer->buf, heap);
   cmp_ok(result, "==", encodeImmediateFixnum(20), __func__);
 }
 
@@ -1680,11 +1687,8 @@ TEST(read_with_nested_list_returns_list) {
 }
 
 TEST(compile_with_read) {
-  ASTNode *node = Reader_read("(let ((x 2) (y 3)) (+ x y))");
-  int compile_result = AST_compile_entry(ctx, node);
-  cmp_ok(compile_result, "==", 0, __func__);
-  Buffer_make_executable(ctx->writer->buf);
-  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
+  uint64_t result = Run_from_cstr("(let ((x 2) (y 3)) (+ x y))", ctx, heap);
+  cmp_ok(result, "==", encodeImmediateFixnum(5), __func__);
 }
 
 int run_tests() {
