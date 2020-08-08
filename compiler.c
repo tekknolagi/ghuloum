@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <assert.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -462,6 +463,75 @@ ASTNode *AST_cdr(ASTNode *cons) {
   assert(cons->type == kCons);
   return cons->value.cons.cdr;
 }
+
+// Reader
+
+void advance(int *pos) { ++*pos; }
+
+ASTNode *Reader_read_number(char *input, int *pos) {
+  char c = '\0';
+  int value = 0;
+  while (isdigit(c = input[*pos])) {
+    value *= 10;
+    value += c - '0';
+    advance(pos);
+  }
+  return AST_new_fixnum(value);
+}
+
+const int ATOM_MAX = 32;
+
+bool isatomchar(char c) { return isalpha(c) || c == '+' || c == '-'; }
+
+ASTNode *Reader_read_atom(char *input, int *pos) {
+  char buf[ATOM_MAX + 1]; // +1 for NUL
+  int length = 0;
+  while (length < ATOM_MAX && isatomchar(buf[length] = input[*pos])) {
+    advance(pos);
+    length++;
+  }
+  buf[length] = '\0';
+  return AST_new_atom(buf);
+}
+
+ASTNode *Reader_read_rec(char *input, int *pos);
+
+ASTNode *Reader_read_list(char *input, int *pos) {
+  if (input[*pos] == ')') {
+    advance(pos);
+    return nil;
+  }
+  ASTNode *car = Reader_read_rec(input, pos);
+  assert(car != NULL);
+  ASTNode *cdr = Reader_read_list(input, pos);
+  assert(cdr != NULL);
+  return AST_new_cons(car, cdr);
+}
+
+ASTNode *Reader_read_rec(char *input, int *pos) {
+  char c = '\0';
+  while (isspace(c = input[*pos])) {
+    advance(pos);
+  }
+  if (isdigit(c)) {
+    return Reader_read_number(input, pos);
+  }
+  if (isatomchar(c)) {
+    return Reader_read_atom(input, pos);
+  }
+  if (c == '(') {
+    advance(pos); // skip '('
+    return Reader_read_list(input, pos);
+  }
+  return NULL;
+}
+
+ASTNode *Reader_read(char *input) {
+  int pos = 0;
+  return Reader_read_rec(input, &pos);
+}
+
+// End Reader
 
 // Compiler context
 
@@ -1540,6 +1610,83 @@ TEST(compile_labelcall_with_one_param) {
   EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
 }
 
+TEST(read_with_number_returns_fixnum) {
+  (void)ctx;
+  char *input = "1234";
+  ASTNode *output = Reader_read(input);
+  assert(output != NULL);
+  cmp_ok(output->type, "==", kFixnum);
+  cmp_ok(output->value.fixnum, "==", 1234);
+}
+
+TEST(read_with_leading_whitespace_ignores_whitespace) {
+  (void)ctx;
+  char *input = "  \t \n 1234";
+  ASTNode *output = Reader_read(input);
+  assert(output != NULL);
+  cmp_ok(output->type, "==", kFixnum);
+  cmp_ok(output->value.fixnum, "==", 1234);
+}
+
+TEST(read_with_atom_returns_atom) {
+  (void)ctx;
+  char *input = "hello";
+  ASTNode *output = Reader_read(input);
+  assert(output != NULL);
+  cmp_ok(output->type, "==", kAtom);
+  ok(AST_atom_equals_cstr(output, "hello"));
+}
+
+TEST(read_with_nil_returns_nil) {
+  (void)ctx;
+  char *input = "()";
+  ASTNode *output = Reader_read(input);
+  assert(output != NULL);
+  cmp_ok(output->type, "==", kCons);
+  ok(output == nil);
+}
+
+TEST(read_with_list_returns_list) {
+  (void)ctx;
+  char *input = "(1 2 3)";
+  ASTNode *output = Reader_read(input);
+  assert(output != NULL);
+  cmp_ok(output->type, "==", kCons);
+  ASTNode *elt = AST_car(output);
+  cmp_ok(elt->type, "==", kFixnum);
+  cmp_ok(elt->value.fixnum, "==", 1);
+  elt = AST_car(AST_cdr(output));
+  cmp_ok(elt->type, "==", kFixnum);
+  cmp_ok(elt->value.fixnum, "==", 2);
+  elt = AST_car(AST_cdr(AST_cdr(output)));
+  cmp_ok(elt->type, "==", kFixnum);
+  cmp_ok(elt->value.fixnum, "==", 3);
+}
+
+TEST(read_with_nested_list_returns_list) {
+  (void)ctx;
+  char *input = "((hello world) (foo bar))";
+  ASTNode *output = Reader_read(input);
+  assert(output != NULL);
+  cmp_ok(output->type, "==", kCons);
+  ASTNode *elt = AST_car(output);
+  cmp_ok(elt->type, "==", kCons);
+  ok(AST_atom_equals_cstr(AST_car(elt), "hello"));
+  ok(AST_atom_equals_cstr(AST_car(AST_cdr(elt)), "world"));
+  elt = AST_car(AST_cdr(output));
+  cmp_ok(elt->type, "==", kCons);
+  ok(AST_atom_equals_cstr(AST_car(elt), "foo"));
+  ok(AST_atom_equals_cstr(AST_car(AST_cdr(elt)), "bar"));
+}
+
+TEST(compile_with_read) {
+  ASTNode *node = Reader_read("(let ((x 2) (y 3)) (+ x y))");
+  int compile_result = AST_compile_entry(ctx, node);
+  cmp_ok(compile_result, "==", 0, __func__);
+  Buffer_make_executable(ctx->writer->buf);
+  EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
+}
+
 int run_tests() {
   plan(NO_PLAN);
   run_test(test_write_bytes_manually);
@@ -1578,6 +1725,13 @@ int run_tests() {
   run_test(test_compile_labelcall_with_undefined_name);
   run_test(test_compile_labelcall_with_no_param);
   run_test(test_compile_labelcall_with_one_param);
+  run_test(test_read_with_number_returns_fixnum);
+  run_test(test_read_with_leading_whitespace_ignores_whitespace);
+  run_test(test_read_with_atom_returns_atom);
+  run_test(test_read_with_nil_returns_nil);
+  run_test(test_read_with_list_returns_list);
+  run_test(test_read_with_nested_list_returns_list);
+  run_test(test_compile_with_read);
   done_testing();
 }
 
