@@ -664,6 +664,7 @@ int AST_compile_labelcall(CompilerContext *ctx, int32_t code_pos, ASTNode *args,
   if (result != 0) {
     return result;
   }
+  Buffer_mov_reg_to_stack(ctx->writer, kRax, stack_index);
   return AST_compile_labelcall(ctx, code_pos, AST_cdr(args),
                                stack_index - kWordSize);
 }
@@ -1600,7 +1601,9 @@ TEST(compile_labelcall_with_one_param) {
   ASTNode *labels = list1(list2(
       AST_new_atom("id"), list3(AST_new_atom("code"), list1(AST_new_atom("x")),
                                 AST_new_atom("x"))));
-  ASTNode *prog = list3(AST_new_atom("labels"), labels, AST_new_fixnum(5));
+  ASTNode *prog = list3(
+      AST_new_atom("labels"), labels,
+      list3(AST_new_atom("labelcall"), AST_new_atom("id"), AST_new_fixnum(5)));
   int compile_result = AST_compile_prog(ctx, prog);
   cmp_ok(compile_result, "==", 0, __func__);
   // 0:  e9 06 00 00 00          jmp    0xb
@@ -1616,6 +1619,31 @@ TEST(compile_labelcall_with_one_param) {
   Buffer_make_executable(ctx->writer->buf);
   EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
 }
+
+// TEST(compile_labelcall_with_two_params) {
+//   // (labels ((add (code (x y) (+ x y)))) (labelcall add 3 4))
+//   ASTNode *body =
+//       list3(AST_new_atom("+"), AST_new_atom("x"), AST_new_atom("y"));
+//   ASTNode *labels =
+//       list1(list2(AST_new_atom("id"),
+//                   list3(AST_new_atom("code"),
+//                         list2(AST_new_atom("x"), AST_new_atom("y")), body)));
+//   ASTNode *prog = list3(AST_new_atom("labels"), labels, AST_new_fixnum(5));
+//   int compile_result = AST_compile_prog(ctx, prog);
+//   cmp_ok(compile_result, "==", 0, __func__);
+//   // 0:  e9 06 00 00 00          jmp    0xb
+//   // 5:  48 8b 44 24 f8          mov    rax,QWORD PTR [rsp-0x8]
+//   // a:  c3                      ret
+//   // b:  48 89 fe                mov    rsi,rdi
+//   // e:  b8 14 00 00 00          mov    eax,0x14
+//   // 13: c3                      ret
+//   byte expected[] = {0xe9, 0x06, 0x00, 0x00, 0x00, 0x48, 0x8b,
+//                      0x44, 0x24, 0xf8, 0xc3, 0x48, 0x89, 0xfe,
+//                      0xb8, 0x14, 0x00, 0x00, 0x00, 0xc3};
+//   EXPECT_EQUALS_BYTES(ctx->writer->buf, expected);
+//   Buffer_make_executable(ctx->writer->buf);
+//   EXPECT_CALL_EQUALS(ctx->writer->buf, encodeImmediateFixnum(5));
+// }
 
 TEST(read_with_number_returns_fixnum) {
   (void)ctx;
