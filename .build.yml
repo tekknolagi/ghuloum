@@ -1,6 +1,8 @@
 image: alpine/edge
+packages:
+- gcc
 tasks:
-- say-hello: |
-   echo hello
-- say-world: |
-   echo world
+- build: |
+   make compiler
+- test: |
+   make test
