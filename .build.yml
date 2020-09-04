@@ -1,0 +1,6 @@
+image: alpine/edge
+tasks:
+- say-hello: |
+   echo hello
+- say-world: |
+   echo world
