@@ -3,6 +3,8 @@ packages:
 - gcc
 tasks:
 - build: |
+   cd ghuloum
    make compiler
 - test: |
+   cd ghuloum
    make test
