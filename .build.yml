@@ -4,7 +4,7 @@ packages:
 tasks:
 - build: |
    cd ghuloum
-   make compiler
+   make
 - test: |
    cd ghuloum
    make test
