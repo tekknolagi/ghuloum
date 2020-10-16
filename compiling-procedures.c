@@ -2694,6 +2694,57 @@ TEST compile_labelcall_with_one_param_and_locals(Buffer *buf) {
   PASS();
 }
 
+TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
+  ASTNode *node = Reader_read(
+      "(labels ((id (code (x y) (+ x y)))) (let ((a 1)) (labelcall id 5 a)))");
+  int compile_result = Compile_entry(buf, node);
+  ASSERT_EQ(compile_result, 0);
+  // clang-format off
+  byte expected[] = {
+      // mov rsi, rdi
+      0x48, 0x89, 0xfe,
+      // jmp 0x15
+      0xe9, 0x15, 0x00, 0x00, 0x00,
+      // mov rax, [rsp-16]
+      0x48, 0x8b, 0x44, 0x24, 0xf0,
+      // mov [rsp-24], rax
+      0x48, 0x89, 0x44, 0x24, 0xe8,
+      // mov rax, [rsp-8]
+      0x48, 0x8b, 0x44, 0x24, 0xf8,
+      // add rax, [rsp-24]
+      0x48, 0x03, 0x44, 0x24, 0xe8,
+      // ret
+      0xc3,
+      // mov rax, compile(1)
+      0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
+      // mov [rsp-8], rax
+      0x48, 0x89, 0x44, 0x24, 0xf8,
+      // mov rax, compile(5)
+      0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
+      // mov [rsp-24], rax
+      0x48, 0x89, 0x44, 0x24, 0xe8,
+      // mov rax, [rsp-8]
+      0x48, 0x8b, 0x44, 0x24, 0xf8,
+      // mov [rsp-32], rax
+      0x48, 0x89, 0x44, 0x24, 0xe0,
+      // sub rsp, 8
+      0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
+      // call `id`
+      0xe8, 0xbd, 0xff, 0xff, 0xff,
+      // add rsp, 8
+      0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
+      // ret
+      0xc3,
+  };
+  // clang-format on
+  EXPECT_EQUALS_BYTES(buf, expected);
+  Buffer_make_executable(buf);
+  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  ASSERT_EQ_FMT(Object_encode_integer(6), result, "0x%lx");
+  AST_heap_free(node);
+  PASS();
+}
+
 SUITE(ast_tests) {
   RUN_TEST(ast_new_pair);
   RUN_TEST(ast_pair_car_returns_car);
@@ -2779,6 +2830,7 @@ SUITE(compiler_tests) {
   RUN_BUFFER_TEST(compile_labelcall_with_no_params_and_locals);
   RUN_BUFFER_TEST(compile_labelcall_with_one_param);
   RUN_BUFFER_TEST(compile_labelcall_with_one_param_and_locals);
+  RUN_BUFFER_TEST(compile_labelcall_with_two_params_and_locals);
 }
 
 // End Tests
