@@ -281,11 +281,6 @@ typedef enum {
   Scale4,
   Scale8,
 } Scale;
-//
-// byte r(Register dst, Register src) {
-//   return 0xc0 | (dst << 3) | src;
-// }
-//
 
 typedef enum {
   kIndexRax = 0,
@@ -1380,6 +1375,23 @@ TEST decode_bool(void) {
 
 TEST address(void) {
   ASSERT_EQ(Object_address((void *)0xFF01), 0xFF00);
+  PASS();
+}
+
+TEST emit_mov_reg_imm32_emits_modrm(Buffer *buf) {
+  Emit_mov_reg_imm32(buf, kRax, 100);
+  byte expected[] = {0x48, 0xc7, 0xc0, 0x64, 0x00, 0x00, 0x00};
+  EXPECT_EQUALS_BYTES(buf, expected);
+  ASSERT_EQ_FMT(modrm(/*direct*/ 3, kRax, 0), 0xc0, "0x%.2x");
+  PASS();
+}
+
+TEST emit_store_reg_indirect_emits_modrm_sib(Buffer *buf) {
+  Emit_store_reg_indirect(buf, Ind(kRsp, -8), kRax);
+  byte expected[] = {0x48, 0x89, 0x44, 0x24, 0xf8};
+  EXPECT_EQUALS_BYTES(buf, expected);
+  ASSERT_EQ_FMT(modrm(/*disp8*/ 1, kIndexNone, kRax), 0x44, "0x%.2x");
+  ASSERT_EQ_FMT(sib(kRsp, kIndexNone, Scale1), 0x24, "0x%.2x");
   PASS();
 }
 
@@ -2771,6 +2783,8 @@ SUITE(buffer_tests) {
   RUN_TEST(buffer_write8_expands_buffer);
   RUN_TEST(buffer_write32_expands_buffer);
   RUN_BUFFER_TEST(buffer_write32_writes_little_endian);
+  RUN_BUFFER_TEST(emit_mov_reg_imm32_emits_modrm);
+  RUN_BUFFER_TEST(emit_store_reg_indirect_emits_modrm_sib);
 }
 
 SUITE(compiler_tests) {
