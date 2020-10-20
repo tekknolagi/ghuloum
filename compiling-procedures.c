@@ -1198,8 +1198,6 @@ WARN_UNUSED int Compile_code(Buffer *buf, ASTNode *code) {
   assert(AST_symbol_matches(code_sym, "code"));
   ASTNode *formals = AST_pair_car(AST_pair_cdr(code));
   ASTNode *code_body = AST_pair_car(AST_pair_cdr(AST_pair_cdr(code)));
-  // Formals are laid out *before* the function frame, so their offsets from
-  // rsp are positive
   return Compile_code_impl(buf, formals, code_body, /*stack_index=*/-kWordSize,
                            /*varenv=*/NULL);
 }
@@ -2757,6 +2755,19 @@ TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
   PASS();
 }
 
+TEST compile_nested_labelcall(Buffer *buf) {
+  ASTNode *node = Reader_read("(labels ((add (code (x y) (+ x y)))"
+                              "         (sub (code (x y) (- x y))))"
+                              "    (labelcall sub 4 (labelcall add 1 2)))");
+  int compile_result = Compile_entry(buf, node);
+  ASSERT_EQ(compile_result, 0);
+  Buffer_make_executable(buf);
+  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  ASSERT_EQ_FMT(Object_encode_integer(1), result, "0x%lx");
+  AST_heap_free(node);
+  PASS();
+}
+
 SUITE(ast_tests) {
   RUN_TEST(ast_new_pair);
   RUN_TEST(ast_pair_car_returns_car);
@@ -2845,6 +2856,7 @@ SUITE(compiler_tests) {
   RUN_BUFFER_TEST(compile_labelcall_with_one_param);
   RUN_BUFFER_TEST(compile_labelcall_with_one_param_and_locals);
   RUN_BUFFER_TEST(compile_labelcall_with_two_params_and_locals);
+  RUN_BUFFER_TEST(compile_nested_labelcall);
 }
 
 // End Tests
