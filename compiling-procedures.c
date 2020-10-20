@@ -256,10 +256,10 @@ typedef enum {
 
 typedef struct Indirect {
   Register reg;
-  int8_t disp;
+  word disp;
 } Indirect;
 
-Indirect Ind(Register reg, int8_t disp) {
+Indirect Ind(Register reg, word disp) {
   return (Indirect){.reg = reg, .disp = disp};
 }
 
@@ -886,7 +886,7 @@ WARN_UNUSED int Compile_let(Buffer *buf, ASTNode *bindings, ASTNode *body,
   return 0;
 }
 
-const word kLabelPlaceholder = 0xdeadbeef;
+const int32_t kLabelPlaceholder = 0xdeadbeef;
 
 WARN_UNUSED int Compile_if(Buffer *buf, ASTNode *cond, ASTNode *consequent,
                            ASTNode *alternate, word stack_index, Env *varenv,
@@ -2707,8 +2707,8 @@ TEST compile_labelcall_with_one_param_and_locals(Buffer *buf) {
 }
 
 TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
-  ASTNode *node = Reader_read(
-      "(labels ((id (code (x y) (+ x y)))) (let ((a 1)) (labelcall id 5 a)))");
+  ASTNode *node = Reader_read("(labels ((add (code (x y) (+ x y)))) (let ((a "
+                              "1)) (labelcall add 5 a)))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2741,7 +2741,7 @@ TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
       0x48, 0x89, 0x44, 0x24, 0xe0,
       // sub rsp, 8
       0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
-      // call `id`
+      // call `add`
       0xe8, 0xbd, 0xff, 0xff, 0xff,
       // add rsp, 8
       0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
