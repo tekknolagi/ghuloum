@@ -8,3 +8,6 @@ tasks:
 - test: |
    cd ghuloum
    make test
+- test_shell: |
+   cd ghuloum
+   ./test
