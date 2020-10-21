@@ -10,4 +10,5 @@ tasks:
    make test
 - test_shell: |
    cd ghuloum
+   rm ./bin/*
    ./test
