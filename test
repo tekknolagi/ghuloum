@@ -1,0 +1,7 @@
+#!/bin/sh -e
+
+./build
+for f in ./bin/*
+do
+  ./$f
+done
