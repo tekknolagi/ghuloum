@@ -1198,8 +1198,9 @@ WARN_UNUSED int Compile_code(Buffer *buf, ASTNode *code, Env *labels) {
   ASTNode *code_sym = AST_pair_car(code);
   assert(AST_is_symbol(code_sym));
   assert(AST_symbol_matches(code_sym, "code"));
-  ASTNode *formals = AST_pair_car(AST_pair_cdr(code));
-  ASTNode *code_body = AST_pair_car(AST_pair_cdr(AST_pair_cdr(code)));
+  ASTNode *args = AST_pair_cdr(code);
+  ASTNode *formals = operand1(args);
+  ASTNode *code_body = operand2(args);
   return Compile_code_impl(buf, formals, code_body, /*stack_index=*/-kWordSize,
                            /*varenv=*/NULL, labels);
 }
@@ -1238,9 +1239,10 @@ WARN_UNUSED int Compile_entry(Buffer *buf, ASTNode *node) {
          "program must have labels");
   // Jump to body
   word body_pos = Emit_jmp(buf, kLabelPlaceholder);
-  ASTNode *bindings = AST_pair_car(AST_pair_cdr(node));
+  ASTNode *args = AST_pair_cdr(node);
+  ASTNode *bindings = operand1(args);
   assert(AST_is_pair(bindings) || AST_is_nil(bindings));
-  ASTNode *body = AST_pair_car(AST_pair_cdr(AST_pair_cdr(node)));
+  ASTNode *body = operand2(args);
   _(Compile_labels(buf, bindings, body, /*labels=*/NULL, body_pos));
   Buffer_write_arr(buf, kFunctionEpilogue, sizeof kFunctionEpilogue);
   return 0;
