@@ -23,5 +23,10 @@ clean:
 $(OUT)/%: %.c greatest.h
 	$(CC) $(CFLAGS) $< -o $@
 
+test-compiling-elf: $(OUT)/compiling-elf
+	./$< ./$(OUT)/generated-elf
+	chmod +x ./$(OUT)/generated-elf
+	@./$(OUT)/generated-elf || if [ $$? -ne 120 ]; then exit 1; fi
+
 test-%: $(OUT)/%
 	./$<
