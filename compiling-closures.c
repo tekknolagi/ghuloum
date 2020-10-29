@@ -502,6 +502,21 @@ void Emit_store_indirect_imm32(Buffer *buf, Indirect dst, int32_t src) {
   Buffer_write32(buf, src);
 }
 
+void Emit_rsp_adjust(Buffer *buf, word adjust) {
+  if (adjust < 0) {
+    Emit_sub_reg_imm32(buf, kRsp, -adjust);
+  } else if (adjust > 0) {
+    Emit_add_reg_imm32(buf, kRsp, adjust);
+  }
+}
+
+void Emit_call_imm32(Buffer *buf, word absolute_address) {
+  // 5 is length of call instruction
+  word relative_address = absolute_address - (Buffer_len(buf) + 5);
+  Buffer_write8(buf, 0xe8);
+  Buffer_write32(buf, relative_address);
+}
+
 // End Emit
 
 // AST
@@ -959,28 +974,12 @@ word list_length(ASTNode *node) {
   return 1 + list_length(AST_pair_cdr(node));
 }
 
-void Emit_rsp_adjust(Buffer *buf, word adjust) {
-  if (adjust < 0) {
-    Emit_sub_reg_imm32(buf, kRsp, -adjust);
-  } else if (adjust > 0) {
-    Emit_add_reg_imm32(buf, kRsp, adjust);
-  }
-}
-
-void Emit_call_imm32(Buffer *buf, word absolute_address) {
-  // 5 is length of call instruction
-  word relative_address = absolute_address - (Buffer_len(buf) + 5);
-  Buffer_write8(buf, 0xe8);
-  Buffer_write32(buf, relative_address);
-}
-
 WARN_UNUSED int Compile_labelcall(Buffer *buf, ASTNode *callable, ASTNode *args,
                                   word stack_index, Env *varenv, Env *labels,
-                                  word nargs, word rsp_adjust) {
+                                  word rsp_adjust) {
   if (AST_is_nil(args)) {
-    const char *symbol = AST_symbol_cstr(callable);
     word code_address;
-    if (!Env_find(labels, symbol, &code_address)) {
+    if (!Env_find(labels, AST_symbol_cstr(callable), &code_address)) {
       return -1;
     }
     // TODO(max): Determine if we need to align the stack to 16 bytes
@@ -996,8 +995,7 @@ WARN_UNUSED int Compile_labelcall(Buffer *buf, ASTNode *callable, ASTNode *args,
   _(Compile_expr(buf, arg, stack_index, varenv, labels));
   Emit_store_reg_indirect(buf, Ind(kRsp, stack_index), kRax);
   return Compile_labelcall(buf, callable, AST_pair_cdr(args),
-                           stack_index - kWordSize, varenv, labels, nargs,
-                           rsp_adjust);
+                           stack_index - kWordSize, varenv, labels, rsp_adjust);
 }
 
 WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
@@ -1141,11 +1139,14 @@ WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
       ASTNode *label = operand1(args);
       assert(AST_is_symbol(label));
       ASTNode *call_args = AST_pair_cdr(args);
-      word nargs = list_length(call_args);
       // Skip a space on the stack to put the return address
-      return Compile_labelcall(buf, label, call_args, stack_index - kWordSize,
-                               // TODO(max): Figure out the +kWordSize
-                               varenv, labels, nargs, stack_index + kWordSize);
+      word arg_stack_index = stack_index - kWordSize;
+      // We enter Compile_call with a stack_index pointing to the next
+      // available spot on the stack. Add kWordSize (stack_index is negative)
+      // so that it is only a multiple of the number of locals N, not N+1.
+      word rsp_adjust = stack_index + kWordSize;
+      return Compile_labelcall(buf, label, call_args, arg_stack_index, varenv,
+                               labels, rsp_adjust);
     }
     if (AST_symbol_matches(callable, "closure")) {
       // Closures look like (closure label freevar0 freevar1 freevar2 ...)
