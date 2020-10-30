@@ -141,6 +141,7 @@ typedef struct {
   BufferState state;
   word len;
   word capacity;
+  word entrypoint;
 } Buffer;
 
 byte *Buffer_alloc_writable(word capacity) {
@@ -157,6 +158,7 @@ void Buffer_init(Buffer *result, word capacity) {
   result->state = kWritable;
   result->len = 0;
   result->capacity = capacity;
+  result->entrypoint = 0;
 }
 
 word Buffer_len(Buffer *buf) { return buf->len; }
@@ -166,6 +168,7 @@ void Buffer_deinit(Buffer *buf) {
   buf->address = NULL;
   buf->len = 0;
   buf->capacity = 0;
+  buf->entrypoint = 0;
 }
 
 int Buffer_make_executable(Buffer *buf) {
@@ -942,6 +945,18 @@ WARN_UNUSED int Compile_if(Buffer *buf, ASTNode *cond, ASTNode *consequent,
 
 const Register kHeapPointer = kRsi;
 
+// (closure FN a b c)
+// * compile(a)
+// * store a at rsp[-8]
+// * compile(b)
+// * store b at rsp[-16]
+// * compile(c)
+// * store c at rsp[-24]
+// * write FN into closure (nfreevars-currentoffset)*8
+// * write c into closure
+// * write b into closure
+// * write a into closure
+
 WARN_UNUSED int Compile_cons(Buffer *buf, ASTNode *car, ASTNode *cdr,
                              word stack_index, Env *varenv, Env *labels) {
   // Compile and store car on the stack
@@ -1160,8 +1175,8 @@ WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
       word num_freevars = list_length(freevars);
       assert(num_freevars == 0 && "freevars unimplemented");
       // TODO(max): Decide if the entire heap should be parseable, and
-      // code_address should be encoded as an integer, or if it should just be
-      // output as-is.
+      // code_address should be encoded as an integer, or if it should just
+      // be output as-is.
       Emit_mov_reg_reg(buf, /*dst=*/kRax, kHeapPointer);
       Emit_store_indirect_imm32(buf, /*dst=*/Ind(kRax, kClosureLabelOffset),
                                 code_address);
@@ -1279,12 +1294,14 @@ WARN_UNUSED int Compile_code(Buffer *buf, ASTNode *code, Env *labels) {
 }
 
 WARN_UNUSED int Compile_labels(Buffer *buf, ASTNode *bindings, ASTNode *body,
-                               Env *labels, word body_pos) {
+                               Env *labels) {
   if (AST_is_nil(bindings)) {
-    Emit_backpatch_imm32(buf, body_pos);
+    buf->entrypoint = Buffer_len(buf);
     // Base case: no bindings. Compile the body
+    Buffer_write_arr(buf, kEntryPrologue, sizeof kEntryPrologue);
     _(Compile_expr(buf, body, /*stack_index=*/-kWordSize, /*varenv=*/NULL,
                    labels));
+    Buffer_write_arr(buf, kFunctionEpilogue, sizeof kFunctionEpilogue);
     return 0;
   }
   assert(AST_is_pair(bindings));
@@ -1298,27 +1315,21 @@ WARN_UNUSED int Compile_labels(Buffer *buf, ASTNode *bindings, ASTNode *body,
   Env entry = Env_bind(AST_symbol_cstr(name), function_location, labels);
   // Compile the binding function
   _(Compile_code(buf, binding_code, &entry));
-  _(Compile_labels(buf, AST_pair_cdr(bindings), body, &entry, body_pos));
-  return 0;
+  return Compile_labels(buf, AST_pair_cdr(bindings), body, &entry);
 }
 
 WARN_UNUSED int Compile_entry(Buffer *buf, ASTNode *node) {
-  Buffer_write_arr(buf, kEntryPrologue, sizeof kEntryPrologue);
   assert(AST_is_pair(node) && "program must have labels");
   // Assume it's (labels ...)
   ASTNode *labels_sym = AST_pair_car(node);
   assert(AST_is_symbol(labels_sym) && "program must have labels");
   assert(AST_symbol_matches(labels_sym, "labels") &&
          "program must have labels");
-  // Jump to body
-  word body_pos = Emit_jmp(buf, kLabelPlaceholder);
   ASTNode *args = AST_pair_cdr(node);
   ASTNode *bindings = operand1(args);
   assert(AST_is_pair(bindings) || AST_is_nil(bindings));
   ASTNode *body = operand2(args);
-  _(Compile_labels(buf, bindings, body, /*labels=*/NULL, body_pos));
-  Buffer_write_arr(buf, kFunctionEpilogue, sizeof kFunctionEpilogue);
-  return 0;
+  return Compile_labels(buf, bindings, body, /*labels=*/NULL);
 }
 
 // End Compile
@@ -1334,7 +1345,8 @@ uword Testing_execute_entry(Buffer *buf, uword *heap) {
   // The pointer-pointer cast is allowed but the underlying
   // data-to-function-pointer back-and-forth is only guaranteed to work on
   // POSIX systems (because of eg dlsym).
-  JitFunction function = *(JitFunction *)(&buf->address);
+  byte *start_address = buf->address + buf->entrypoint;
+  JitFunction function = *(JitFunction *)(&start_address);
   return function(heap);
 }
 
@@ -2702,8 +2714,6 @@ TEST compile_labels_with_no_labels(Buffer *buf) {
   byte expected[] = {
       // mov rsi, rdi
       0x48, 0x89, 0xfe,
-      // jmp 0x00
-      0xe9, 0x00, 0x00, 0x00, 0x00,
       // mov rax, 0x2
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
       // ret
@@ -2724,14 +2734,12 @@ TEST compile_labels_with_one_label(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rsi, rdi
-      0x48, 0x89, 0xfe,
-      // jmp 0x08
-      0xe9, 0x08, 0x00, 0x00, 0x00,
       // mov rax, compile(5)
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
       // ret
       0xc3,
+      // mov rsi, rdi
+      0x48, 0x89, 0xfe,
       // mov rax, 0x2
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
       // ret
@@ -2753,16 +2761,14 @@ TEST compile_labelcall_with_no_params(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rsi, rdi
-      0x48, 0x89, 0xfe,
-      // jmp 0x08
-      0xe9, 0x08, 0x00, 0x00, 0x00,
       // mov rax, compile(5)
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
       // ret
       0xc3,
+      // mov rsi, rdi
+      0x48, 0x89, 0xfe,
       // call `const`
-      0xe8, 0xf3, 0xff, 0xff, 0xff,
+      0xe8, 0xf0, 0xff, 0xff, 0xff,
       // ret
       0xc3,
   };
@@ -2782,14 +2788,12 @@ TEST compile_labelcall_with_no_params_and_locals(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rsi, rdi
-      0x48, 0x89, 0xfe,
-      // jmp 0x08
-      0xe9, 0x08, 0x00, 0x00, 0x00,
       // mov rax, compile(5)
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
       // ret
       0xc3,
+      // mov rsi, rdi
+      0x48, 0x89, 0xfe,
       // mov rax, compile(1)
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
       // mov [rsp-8], rax
@@ -2797,7 +2801,7 @@ TEST compile_labelcall_with_no_params_and_locals(Buffer *buf) {
       // sub rsp, 8
       0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
       // call `const`
-      0xe8, 0xe0, 0xff, 0xff, 0xff,
+      0xe8, 0xdd, 0xff, 0xff, 0xff,
       // add rsp, 8
       0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
       // ret
@@ -2819,20 +2823,18 @@ TEST compile_labelcall_with_one_param(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rsi, rdi
-      0x48, 0x89, 0xfe,
-      // jmp 0x06
-      0xe9, 0x06, 0x00, 0x00, 0x00,
       // mov rax, [rsp-8]
       0x48, 0x8b, 0x44, 0x24, 0xf8,
       // ret
       0xc3,
+      // mov rsi, rdi
+      0x48, 0x89, 0xfe,
       // mov rax, compile(5)
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
       // mov [rsp-16], rax
       0x48, 0x89, 0x44, 0x24, 0xf0,
       // call `id`
-      0xe8, 0xe9, 0xff, 0xff, 0xff,
+      0xe8, 0xe6, 0xff, 0xff, 0xff,
       // ret
       0xc3,
   };
@@ -2862,14 +2864,12 @@ TEST compile_labelcall_with_one_param_and_locals(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rsi, rdi
-      0x48, 0x89, 0xfe,
-      // jmp 0x06
-      0xe9, 0x06, 0x00, 0x00, 0x00,
       // mov rax, [rsp-8]
       0x48, 0x8b, 0x44, 0x24, 0xf8,
       // ret
       0xc3,
+      // mov rsi, rdi
+      0x48, 0x89, 0xfe,
       // mov rax, compile(1)
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
       // mov [rsp-8], rax
@@ -2881,7 +2881,7 @@ TEST compile_labelcall_with_one_param_and_locals(Buffer *buf) {
       // sub rsp, 8
       0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
       // call `id`
-      0xe8, 0xd6, 0xff, 0xff, 0xff,
+      0xe8, 0xd3, 0xff, 0xff, 0xff,
       // add rsp, 8
       0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
       // ret
@@ -2904,10 +2904,6 @@ TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rsi, rdi
-      0x48, 0x89, 0xfe,
-      // jmp 0x15
-      0xe9, 0x15, 0x00, 0x00, 0x00,
       // mov rax, [rsp-16]
       0x48, 0x8b, 0x44, 0x24, 0xf0,
       // mov [rsp-24], rax
@@ -2918,6 +2914,8 @@ TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
       0x48, 0x03, 0x44, 0x24, 0xe8,
       // ret
       0xc3,
+      // mov rsi, rdi
+      0x48, 0x89, 0xfe,
       // mov rax, compile(1)
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
       // mov [rsp-8], rax
@@ -2933,7 +2931,7 @@ TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
       // sub rsp, 8
       0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
       // call `add`
-      0xe8, 0xbd, 0xff, 0xff, 0xff,
+      0xe8, 0xba, 0xff, 0xff, 0xff,
       // add rsp, 8
       0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
       // ret
@@ -3005,7 +3003,7 @@ TEST compile_closure_no_freevars(Buffer *buf, uword *heap) {
   Buffer_make_executable(buf);
   uword result = Testing_execute_entry(buf, heap);
   ASSERT(Object_is_closure(result));
-  ASSERT_EQ_FMT((uword)8, Object_closure_label(result), "%ld");
+  ASSERT_EQ_FMT((uword)0, Object_closure_label(result), "%ld");
   AST_heap_free(node);
   PASS();
 }
