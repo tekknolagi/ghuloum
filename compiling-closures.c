@@ -125,6 +125,12 @@ uword Object_closure_label(uword value) {
   return ((uword *)Object_address((void *)value))[kClosureLabelIndex];
 }
 
+uword Object_closure_freevar(uword value, word n) {
+  assert(Object_is_closure(value));
+  // +1 for label
+  return ((uword *)Object_address((void *)value))[n + 1];
+}
+
 // End Objects
 
 // Buffer
@@ -1013,6 +1019,24 @@ WARN_UNUSED int Compile_labelcall(Buffer *buf, ASTNode *callable, ASTNode *args,
                            stack_index - kWordSize, varenv, labels, rsp_adjust);
 }
 
+WARN_UNUSED int Compile_closure(Buffer *buf, ASTNode *freevars,
+                                word stack_index, word closure_index,
+                                Env *varenv, Env *labels) {
+  if (AST_is_nil(freevars)) {
+    Emit_mov_reg_reg(buf, /*dst=*/kRdi, kHeapPointer);
+    return 0;
+  }
+  assert(AST_is_pair(freevars));
+  ASTNode *freevar = AST_pair_car(freevars);
+  _(Compile_expr(buf, freevar, stack_index, varenv, labels));
+  Emit_store_reg_indirect(buf, /*dst=*/Ind(kRsp, stack_index), /*src=*/kRax);
+  _(Compile_closure(buf, AST_pair_cdr(freevars), stack_index - kWordSize,
+                    closure_index + kWordSize, varenv, labels));
+  Emit_load_reg_indirect(buf, /*dst=*/kRax, /*src=*/Ind(kRsp, stack_index));
+  Emit_store_reg_indirect(buf, /*dst=*/Ind(kRdi, closure_index), /*src=*/kRax);
+  return 0;
+}
+
 WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
                              word stack_index, Env *varenv, Env *labels) {
   if (AST_is_symbol(callable)) {
@@ -1173,17 +1197,18 @@ WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
       }
       ASTNode *freevars = AST_pair_cdr(args);
       word num_freevars = list_length(freevars);
-      assert(num_freevars == 0 && "freevars unimplemented");
       // TODO(max): Decide if the entire heap should be parseable, and
       // code_address should be encoded as an integer, or if it should just
       // be output as-is.
-      Emit_mov_reg_reg(buf, /*dst=*/kRax, kHeapPointer);
+      // Emit_mov_reg_reg(buf, /*dst=*/kRax, kHeapPointer);
+      _(Compile_closure(buf, freevars, stack_index, /*closure_index=*/kWordSize,
+                        varenv, labels));
+      Emit_mov_reg_reg(buf, /*dst=*/kRax, /*src=*/kRdi);
       Emit_store_indirect_imm32(buf, /*dst=*/Ind(kRax, kClosureLabelOffset),
-                                code_address);
-      Emit_mov_reg_reg(buf, /*dst=*/kRax, /*src=*/kHeapPointer);
+                                /*src=*/code_address);
       Emit_or_reg_imm8(buf, /*dst=*/kRax, kClosureTag);
       Emit_add_reg_imm32(buf, /*dst=*/kHeapPointer,
-                         kWordSize + num_freevars * kWordSize);
+                         (num_freevars + 1) * kWordSize);
       return 0;
     }
   }
@@ -3008,6 +3033,98 @@ TEST compile_closure_no_freevars(Buffer *buf, uword *heap) {
   PASS();
 }
 
+TEST compile_closure_one_freevar(Buffer *buf, uword *heap) {
+  ASTNode *node = Reader_read("(closure foo 1)");
+  Env labels = Env_bind("foo", 8, NULL);
+  Buffer_write_arr(buf, kEntryPrologue, sizeof kEntryPrologue);
+  int compile_result =
+      Compile_expr(buf, node, -kWordSize, /*varenv=*/NULL, &labels);
+  ASSERT_EQ(compile_result, 0);
+  Emit_ret(buf);
+  // clang-format off
+  byte expected[] = {
+      // mov rax, compile(1)
+      0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
+      // mov [rsp-8], rax
+      0x48, 0x89, 0x44, 0x24, 0xf8,
+      // mov rdi, rsi
+      0x48, 0x89, 0xf7,
+      // mov rax, [rsp - 8]
+      0x48, 0x8b, 0x44, 0x24, 0xf8,
+      // mov [rdi + 8], rax
+      0x48, 0x89, 0x47, 0x08,
+      // mov rax, rdi
+      0x48, 0x89, 0xf8,
+      // mov qword [rax], 8
+      0x48, 0xc7, 0x40, 0x00, 0x08, 0x00, 0x00, 0x00,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add rsi, 0x10 (label + 1 freevar)
+      0x48, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
+  };
+  // clang-format on
+  EXPECT_ENTRY_CONTAINS_CODE(buf, expected);
+  Buffer_make_executable(buf);
+  uword result = Testing_execute_entry(buf, heap);
+  ASSERT(Object_is_closure(result));
+  ASSERT_EQ_FMT((uword)8, Object_closure_label(result), "%ld");
+  ASSERT_EQ_FMT(Object_encode_integer(1), Object_closure_freevar(result, 0),
+                "%ld");
+  AST_heap_free(node);
+  PASS();
+}
+
+TEST compile_closure_two_freevars(Buffer *buf, uword *heap) {
+  ASTNode *node = Reader_read("(closure foo 1 2)");
+  Env labels = Env_bind("foo", 8, NULL);
+  Buffer_write_arr(buf, kEntryPrologue, sizeof kEntryPrologue);
+  int compile_result =
+      Compile_expr(buf, node, -kWordSize, /*varenv=*/NULL, &labels);
+  ASSERT_EQ(compile_result, 0);
+  Emit_ret(buf);
+  // clang-format off
+  byte expected[] = {
+      // mov rax, compile(1)
+      0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
+      // mov [rsp-8], rax
+      0x48, 0x89, 0x44, 0x24, 0xf8,
+      // mov rax, compile(2)
+      0x48, 0xc7, 0xc0, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-16], rax
+      0x48, 0x89, 0x44, 0x24, 0xf0,
+      // mov rdi, rsi
+      0x48, 0x89, 0xf7,
+      // mov rax, [rsp - 16]
+      0x48, 0x8b, 0x44, 0x24, 0xf0,
+      // mov [rdi + 16], rax
+      0x48, 0x89, 0x47, 0x10,
+      // mov rax, [rsp - 8]
+      0x48, 0x8b, 0x44, 0x24, 0xf8,
+      // mov [rdi + 8], rax
+      0x48, 0x89, 0x47, 0x08,
+      // mov rax, rdi
+      0x48, 0x89, 0xf8,
+      // mov qword [rax], 8
+      0x48, 0xc7, 0x40, 0x00, 0x08, 0x00, 0x00, 0x00,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add rsi, 0x10 (label + 2 freevars)
+      0x48, 0x81, 0xc6, 0x18, 0x00, 0x00, 0x00,
+  };
+  // clang-format on
+  EXPECT_ENTRY_CONTAINS_CODE(buf, expected);
+  Buffer_make_executable(buf);
+  uword result = Testing_execute_entry(buf, heap);
+  ASSERT(Object_is_closure(result));
+  ASSERT_EQ_FMT((uword)8, Object_closure_label(result), "%ld");
+  ASSERT_EQ_FMT(Object_encode_integer(1), Object_closure_freevar(result, 0),
+                "%ld");
+  ASSERT_EQ_FMT(Object_encode_integer(2), Object_closure_freevar(result, 1),
+                "%ld");
+  AST_heap_free(node);
+  PASS();
+}
+
 SUITE(ast_tests) {
   RUN_TEST(ast_new_pair);
   RUN_TEST(ast_pair_car_returns_car);
@@ -3106,6 +3223,8 @@ SUITE(compiler_tests) {
   RUN_BUFFER_TEST(compile_factorial_labelcall);
   RUN_BUFFER_TEST(compile_closure_undefined_label);
   RUN_HEAP_TEST(compile_closure_no_freevars);
+  RUN_HEAP_TEST(compile_closure_one_freevar);
+  RUN_HEAP_TEST(compile_closure_two_freevars);
 }
 
 // End Tests
