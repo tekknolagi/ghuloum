@@ -2496,7 +2496,7 @@ TEST compile_cdr(Buffer *buf, uword *heap) {
 }
 
 TEST compile_code_with_no_params(Buffer *buf) {
-  ASTNode *node = Reader_read("(code () 1)");
+  ASTNode *node = Reader_read("(code () () 1)");
   int compile_result = Compile_code(buf, node, /*labels=*/NULL);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2578,7 +2578,7 @@ TEST compile_labels_with_no_labels(Buffer *buf) {
 }
 
 TEST compile_labels_with_one_label(Buffer *buf) {
-  ASTNode *node = Reader_read("(labels ((const (code () 5))) 1)");
+  ASTNode *node = Reader_read("(labels ((const (code () () 5))) 1)");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2605,7 +2605,7 @@ TEST compile_labels_with_one_label(Buffer *buf) {
 
 TEST compile_labelcall_with_no_params(Buffer *buf) {
   ASTNode *node =
-      Reader_read("(labels ((const (code () 5))) (labelcall const))");
+      Reader_read("(labels ((const (code () () 5))) (labelcall const))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2632,7 +2632,7 @@ TEST compile_labelcall_with_no_params(Buffer *buf) {
 
 TEST compile_labelcall_with_no_params_and_locals(Buffer *buf) {
   ASTNode *node = Reader_read(
-      "(labels ((const (code () 5))) (let ((a 1)) (labelcall const)))");
+      "(labels ((const (code () () 5))) (let ((a 1)) (labelcall const)))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
