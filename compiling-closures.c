@@ -1203,15 +1203,31 @@ WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
       return 0;
     }
   }
+
+
+  // * Evaluate all the arguments and save to the stack
+  // * Save two stack locations: closure pointer, return point
+  // * Evaluate the callable/operator
+  //   * Save the old value to the stack in current frame (?)
+  //   * Move the callable's closure pointer to rdi
+  // * Adjust rsp; make sure return point is at [rsp-0]
+  // * Call closure[label]
+  // * Adjust rsp
+  // * Restore calling frame's rdi from stack
+
+
   // Skip two spaces on the stack to put the return address and closure
   // pointer
   word closure_stack_index = stack_index - kWordSize;
   word arg_stack_index = closure_stack_index - kWordSize;
   _(Compile_funcall(buf, callable, args, arg_stack_index, varenv, labels,
                     closure_stack_index));
-  // Put the closure on the stack after the return address
+  // Save the current closure pointer to the stack so that it can be restored
+  // after the call
   Emit_store_reg_indirect(buf, /*dst=*/Ind(kRsp, closure_stack_index),
-                          /*src=*/kRax);
+                          /*src=*/kRdi);
+  // Set the closure pointer for the new call frame
+  Emit_mov_reg_reg(buf, /*dst=*/kRdi, /*src=*/kRax);
   // Put the code pointer in rax so that it can be called
   Emit_load_reg_indirect(buf, /*dst=*/kRax,
                          /*src=*/Ind(kRax, -kClosureTag + kClosureLabelOffset));
@@ -1222,6 +1238,8 @@ WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
   Emit_rsp_adjust(buf, rsp_adjust);
   Emit_call_reg(buf, kRax);
   Emit_rsp_adjust(buf, -rsp_adjust);
+  // Load the saved closure pointer
+  Emit_load_reg_indirect(buf, /*dst=*/kRdi, /*src=*/Ind(kRsp, closure_stack_index));
   return 0;
 }
 
