@@ -29,7 +29,7 @@ def remove_ext(name):
     return name.rpartition(".")[0]
 
 
-CC = "gcc-8"
+CC = "gcc"
 CFLAGS = "-O0 -g -Wall -Wextra -pedantic -fno-strict-aliasing -std=c99"
 OUTDIR = "bin"
 SRCS = [
@@ -43,6 +43,8 @@ SRCS = [
     "compiling-if.c",
     "compiling-heap.c",
     "compiling-procedures.c",
+    "compiling-closures.c",
+    "compiling-elf.c",
 ]
 NINJA = "build.ninja"
 BINS = {src: f"./{OUTDIR}/{remove_ext(src)}" for src in SRCS}
