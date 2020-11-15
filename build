@@ -44,6 +44,5 @@ update_if_necessary compiling-if
 update_if_necessary compiling-heap
 update_if_necessary compiling-procedures
 update_if_necessary compiling-closures
-update_if_necessary compiling-elf
 
 exit 0

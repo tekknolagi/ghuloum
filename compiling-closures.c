@@ -125,6 +125,12 @@ uword Object_closure_label(uword value) {
   return ((uword *)Object_address((void *)value))[kClosureLabelIndex];
 }
 
+uword Object_closure_freevar(uword value, word n) {
+  assert(Object_is_closure(value));
+  // +1 for label
+  return ((uword *)Object_address((void *)value))[n + 1];
+}
+
 // End Objects
 
 // Buffer
@@ -269,6 +275,18 @@ typedef enum {
   kNotGreaterOrEqual = kLess,
   // TODO(max): Add more
 } Condition;
+
+typedef enum {
+  kModDeref = 0,
+  kModDisp8,
+  kModDisp32,
+  kModDirect,
+} Mod;
+
+typedef enum {
+  kNear = 2,
+  kFar = 3,
+} CallDistance;
 
 typedef struct Indirect {
   Register reg;
@@ -518,6 +536,19 @@ void Emit_call_imm32(Buffer *buf, word absolute_address) {
   word relative_address = absolute_address - (Buffer_len(buf) + 5);
   Buffer_write8(buf, 0xe8);
   Buffer_write32(buf, relative_address);
+}
+
+void Emit_call_indirect(Buffer *buf, Indirect target) {
+  assert(target.reg != kRsp);
+  Buffer_write8(buf, 0xff);
+  Buffer_write8(buf, modrm(kModDisp32, target.reg, kNear));
+  Buffer_write32(buf, target.disp);
+}
+
+void Emit_call_reg(Buffer *buf, Register reg) {
+  assert(reg != kRsp);
+  Buffer_write8(buf, 0xff);
+  Buffer_write8(buf, modrm(kModDirect, reg, kNear));
 }
 
 // End Emit
@@ -944,18 +975,8 @@ WARN_UNUSED int Compile_if(Buffer *buf, ASTNode *cond, ASTNode *consequent,
 }
 
 const Register kHeapPointer = kRsi;
-
-// (closure FN a b c)
-// * compile(a)
-// * store a at rsp[-8]
-// * compile(b)
-// * store b at rsp[-16]
-// * compile(c)
-// * store c at rsp[-24]
-// * write FN into closure (nfreevars-currentoffset)*8
-// * write c into closure
-// * write b into closure
-// * write a into closure
+const Register kClosurePointer = kRdi;
+const Register kCodePointer = kRcx;
 
 WARN_UNUSED int Compile_cons(Buffer *buf, ASTNode *car, ASTNode *cdr,
                              word stack_index, Env *varenv, Env *labels) {
@@ -973,7 +994,7 @@ WARN_UNUSED int Compile_cons(Buffer *buf, ASTNode *car, ASTNode *cdr,
   Emit_store_reg_indirect(buf, /*dst=*/Ind(kHeapPointer, kCarOffset),
                           /*src=*/kRax);
   // Store tagged pointer in rax
-  // TODO(max): Rewrite as lea rax, [rsi+kPairTag]
+  // TODO(max): Rewrite as lea rax, [Heap+kPairTag]
   Emit_mov_reg_reg(buf, /*dst=*/kRax, /*src=*/kHeapPointer);
   Emit_or_reg_imm8(buf, /*dst=*/kRax, kPairTag);
   // Bump the heap pointer
@@ -989,28 +1010,38 @@ word list_length(ASTNode *node) {
   return 1 + list_length(AST_pair_cdr(node));
 }
 
-WARN_UNUSED int Compile_labelcall(Buffer *buf, ASTNode *callable, ASTNode *args,
-                                  word stack_index, Env *varenv, Env *labels,
-                                  word rsp_adjust) {
+WARN_UNUSED int Compile_funcall(Buffer *buf, ASTNode *callable, ASTNode *args,
+                                word stack_index, Env *varenv, Env *labels,
+                                word closure_index) {
   if (AST_is_nil(args)) {
-    word code_address;
-    if (!Env_find(labels, AST_symbol_cstr(callable), &code_address)) {
-      return -1;
-    }
-    // TODO(max): Determine if we need to align the stack to 16 bytes
-    // Save the locals
-    Emit_rsp_adjust(buf, rsp_adjust);
-    Emit_call_imm32(buf, code_address);
-    // Unsave the locals
-    Emit_rsp_adjust(buf, -rsp_adjust);
-    return 0;
+    // This should result in a closure
+    return Compile_expr(buf, callable, stack_index, varenv, labels);
   }
   assert(AST_is_pair(args));
   ASTNode *arg = AST_pair_car(args);
   _(Compile_expr(buf, arg, stack_index, varenv, labels));
   Emit_store_reg_indirect(buf, Ind(kRsp, stack_index), kRax);
-  return Compile_labelcall(buf, callable, AST_pair_cdr(args),
-                           stack_index - kWordSize, varenv, labels, rsp_adjust);
+  return Compile_funcall(buf, callable, AST_pair_cdr(args),
+                         stack_index - kWordSize, varenv, labels,
+                         closure_index);
+}
+
+WARN_UNUSED int Compile_closure(Buffer *buf, ASTNode *freevars,
+                                word stack_index, word closure_index,
+                                Env *varenv, Env *labels) {
+  if (AST_is_nil(freevars)) {
+    return 0;
+  }
+  assert(AST_is_pair(freevars));
+  ASTNode *freevar = AST_pair_car(freevars);
+  _(Compile_expr(buf, freevar, stack_index, varenv, labels));
+  Emit_store_reg_indirect(buf, /*dst=*/Ind(kRsp, stack_index), /*src=*/kRax);
+  _(Compile_closure(buf, AST_pair_cdr(freevars), stack_index - kWordSize,
+                    closure_index + kWordSize, varenv, labels));
+  Emit_load_reg_indirect(buf, /*dst=*/kRax, /*src=*/Ind(kRsp, stack_index));
+  Emit_store_reg_indirect(buf, /*dst=*/Ind(kHeapPointer, closure_index),
+                          /*src=*/kRax);
+  return 0;
 }
 
 WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
@@ -1150,19 +1181,6 @@ WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
                              /*src=*/Ind(kRax, kCdrOffset - kPairTag));
       return 0;
     }
-    if (AST_symbol_matches(callable, "labelcall")) {
-      ASTNode *label = operand1(args);
-      assert(AST_is_symbol(label));
-      ASTNode *call_args = AST_pair_cdr(args);
-      // Skip a space on the stack to put the return address
-      word arg_stack_index = stack_index - kWordSize;
-      // We enter Compile_call with a stack_index pointing to the next
-      // available spot on the stack. Add kWordSize (stack_index is negative)
-      // so that it is only a multiple of the number of locals N, not N+1.
-      word rsp_adjust = stack_index + kWordSize;
-      return Compile_labelcall(buf, label, call_args, arg_stack_index, varenv,
-                               labels, rsp_adjust);
-    }
     if (AST_symbol_matches(callable, "closure")) {
       // Closures look like (closure label freevar0 freevar1 freevar2 ...)
       ASTNode *label = operand1(args);
@@ -1173,21 +1191,71 @@ WARN_UNUSED int Compile_call(Buffer *buf, ASTNode *callable, ASTNode *args,
       }
       ASTNode *freevars = AST_pair_cdr(args);
       word num_freevars = list_length(freevars);
-      assert(num_freevars == 0 && "freevars unimplemented");
       // TODO(max): Decide if the entire heap should be parseable, and
       // code_address should be encoded as an integer, or if it should just
       // be output as-is.
-      Emit_mov_reg_reg(buf, /*dst=*/kRax, kHeapPointer);
-      Emit_store_indirect_imm32(buf, /*dst=*/Ind(kRax, kClosureLabelOffset),
-                                code_address);
+      _(Compile_closure(buf, freevars, stack_index, /*closure_index=*/kWordSize,
+                        varenv, labels));
+      // Add the code section address to the section offset of the code
+      Emit_mov_reg_reg(buf, /*dst=*/kRax, /*src=*/kCodePointer);
+      Emit_add_reg_imm32(buf, /*dst=*/kRax, code_address);
+      // Closure is now in kHeapPointer; store the code
+      Emit_store_reg_indirect(buf,
+                              /*dst=*/Ind(kHeapPointer, kClosureLabelOffset),
+                              /*src=*/kRax);
+      // Tag the pointer in rax
       Emit_mov_reg_reg(buf, /*dst=*/kRax, /*src=*/kHeapPointer);
       Emit_or_reg_imm8(buf, /*dst=*/kRax, kClosureTag);
       Emit_add_reg_imm32(buf, /*dst=*/kHeapPointer,
-                         kWordSize + num_freevars * kWordSize);
+                         (num_freevars + 1) * kWordSize);
       return 0;
     }
   }
-  assert(0 && "unexpected call type");
+
+  // * Evaluate all the arguments and save to the stack
+  // * Save two stack locations: closure pointer, return point
+  // * Evaluate the callable/operator
+  //   * Save the old value to the stack in current frame (?)
+  //   * Move the callable's closure pointer to rdi
+  // * Adjust rsp; make sure return point is at [rsp-0]
+  // * Call closure[label]
+  // * Adjust rsp
+  // * Restore calling frame's rdi from stack
+
+  // Skip two spaces on the stack to put the return address and closure
+  // pointer
+  word closure_stack_index = stack_index;
+  word return_point_index = closure_stack_index - kWordSize;
+  word arg_stack_index = return_point_index - kWordSize;
+  // Compile arguments and callable
+  _(Compile_funcall(buf, callable, args, arg_stack_index, varenv, labels,
+                    closure_stack_index));
+  // Save the current closure pointer to the stack so that it can be restored
+  // after the call
+  Emit_store_reg_indirect(buf, /*dst=*/Ind(kRsp, closure_stack_index),
+                          /*src=*/kClosurePointer);
+  // Set the closure pointer for the new call frame with tag removed
+  Emit_mov_reg_reg(buf, /*dst=*/kClosurePointer, /*src=*/kRax);
+  Emit_sub_reg_imm32(buf, kClosurePointer, kClosureTag);
+  // Put the code pointer in rax so that it can be called
+  Emit_load_reg_indirect(buf, /*dst=*/kRax,
+                         /*src=*/Ind(kClosurePointer, kClosureLabelOffset));
+  // We enter Compile_call with a stack_index pointing to the next
+  // available spot on the stack, where we will put the closure pointer. We
+  // need to save the locals on the stack as well as the closure pointer. So
+  // save everything up to *and* including stack_index.
+  // [ 24: next available ]  <-- closure pointer going here
+  // [ 16: local          ]
+  // [  8: local          ]
+  // [  0: return point   ]
+  // stack_index is at 24 and rsp is at 0. Save all three slots.
+  Emit_rsp_adjust(buf, stack_index);
+  Emit_call_reg(buf, kRax);
+  Emit_rsp_adjust(buf, -stack_index);
+  // Load the saved closure pointer
+  Emit_load_reg_indirect(buf, /*dst=*/kClosurePointer,
+                         /*src=*/Ind(kRsp, closure_stack_index));
+  return 0;
 }
 
 WARN_UNUSED int Compile_expr(Buffer *buf, ASTNode *node, word stack_index,
@@ -1223,7 +1291,7 @@ WARN_UNUSED int Compile_expr(Buffer *buf, ASTNode *node, word stack_index,
                             "should be at offset 0");
       // If the offset is negative, this is a stack-allocated variable.
       // Otherwise, it is a closure-allocated variable.
-      Register reg = offset < 0 ? kRsp : kRdi;
+      Register reg = offset < 0 ? kRsp : kClosurePointer;
       Emit_load_reg_indirect(buf, /*dst=*/kRax, /*src=*/Ind(reg, offset));
       return 0;
     }
@@ -1233,8 +1301,13 @@ WARN_UNUSED int Compile_expr(Buffer *buf, ASTNode *node, word stack_index,
 }
 
 const byte kEntryPrologue[] = {
+    // Save the code pointer in rcx, our global code pointer
+    // mov kCodePointer, rsi
+    kRexPrefix,
+    0x8b,
+    0xce,
     // Save the heap in rsi, our global heap pointer
-    // mov rsi, rdi
+    // mov kHeapPointer, rdi
     kRexPrefix,
     0x89,
     0xfe,
@@ -1334,7 +1407,7 @@ WARN_UNUSED int Compile_entry(Buffer *buf, ASTNode *node) {
 
 // End Compile
 
-typedef uword (*JitFunction)(uword *heap);
+typedef uword (*JitFunction)(uword *heap, byte *code);
 
 // Testing
 
@@ -1347,7 +1420,7 @@ uword Testing_execute_entry(Buffer *buf, uword *heap) {
   // POSIX systems (because of eg dlsym).
   byte *start_address = buf->address + buf->entrypoint;
   JitFunction function = *(JitFunction *)(&start_address);
-  return function(heap);
+  return function(heap, buf->address);
 }
 
 uword Testing_execute_expr(Buffer *buf) {
@@ -2291,7 +2364,7 @@ TEST compile_symbol_in_closure_returns_value(Buffer *buf) {
   int compile_result =
       Compile_expr(buf, node, -kWordSize, &env1, /*labels=*/NULL);
   ASSERT_EQ(compile_result, 0);
-  byte expected[] = {// mov rax, [rdi+33]
+  byte expected[] = {// mov rax, [Closure+33]
                      0x48, 0x8b, 0x47, 33};
   EXPECT_EQUALS_BYTES(buf, expected);
   AST_heap_free(node);
@@ -2452,17 +2525,17 @@ TEST compile_cons(Buffer *buf, uword *heap) {
       0x48, 0x89, 0x44, 0x24, 0xf8,
       // mov rax, 0x4
       0x48, 0xc7, 0xc0, 0x08, 0x00, 0x00, 0x00,
-      // mov [rsi+Cdr], rax
+      // mov [Heap+Cdr], rax
       0x48, 0x89, 0x46, 0x08,
       // mov rax, [rsp-8]
       0x48, 0x8b, 0x44, 0x24, 0xf8,
-      // mov [rsi+Car], rax
+      // mov [Heap+Car], rax
       0x48, 0x89, 0x46, 0x00,
-      // mov rax, rsi
+      // mov rax, Heap
       0x48, 0x89, 0xf0,
       // or rax, kPairTag
       0x48, 0x83, 0xc8, 0x01,
-      // add rsi, 2*kWordSize
+      // add Heap, 2*kWordSize
       0x48, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
   };
   // clang-format on
@@ -2523,17 +2596,17 @@ TEST compile_car(Buffer *buf, uword *heap) {
       0x48, 0x89, 0x44, 0x24, 0xf8,
       // mov rax, 0x4
       0x48, 0xc7, 0xc0, 0x08, 0x00, 0x00, 0x00,
-      // mov [rsi+Cdr], rax
+      // mov [Heap+Cdr], rax
       0x48, 0x89, 0x46, 0x08,
       // mov rax, [rsp-8]
       0x48, 0x8b, 0x44, 0x24, 0xf8,
-      // mov [rsi+Car], rax
+      // mov [Heap+Car], rax
       0x48, 0x89, 0x46, 0x00,
-      // mov rax, rsi
+      // mov rax, Heap
       0x48, 0x89, 0xf0,
       // or rax, kPairTag
       0x48, 0x83, 0xc8, 0x01,
-      // add rsi, 2*kWordSize
+      // add Heap, 2*kWordSize
       0x48, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
       // mov rax, [rax-1]
       0x48, 0x8b, 0x40, 0xff,
@@ -2559,17 +2632,17 @@ TEST compile_cdr(Buffer *buf, uword *heap) {
       0x48, 0x89, 0x44, 0x24, 0xf8,
       // mov rax, 0x4
       0x48, 0xc7, 0xc0, 0x08, 0x00, 0x00, 0x00,
-      // mov [rsi+Cdr], rax
+      // mov [Heap+Cdr], rax
       0x48, 0x89, 0x46, 0x08,
       // mov rax, [rsp-8]
       0x48, 0x8b, 0x44, 0x24, 0xf8,
-      // mov [rsi+Car], rax
+      // mov [Heap+Car], rax
       0x48, 0x89, 0x46, 0x00,
-      // mov rax, rsi
+      // mov rax, Heap
       0x48, 0x89, 0xf0,
       // or rax, kPairTag
       0x48, 0x83, 0xc8, 0x01,
-      // add rsi, 2*kWordSize
+      // add Heap, 2*kWordSize
       0x48, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
       // mov rax, [rax+7]
       0x48, 0x8b, 0x40, 0x07,
@@ -2626,7 +2699,7 @@ TEST compile_code_with_one_freevar(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rax, [rdi+8]
+      // mov rax, [Closure+8]
       0x48, 0x8b, 0x47, 0x08,
       // ret
       0xc3,
@@ -2666,11 +2739,11 @@ TEST compile_code_with_two_freevars(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rax, [rdi+16]
+      // mov rax, [Closure+16]
       0x48, 0x8b, 0x47, 0x10,
       // mov [rsp-8], rax
       0x48, 0x89, 0x44, 0x24, 0xf8,
-      // mov rax, [rdi+8]
+      // mov rax, [Closure+8]
       0x48, 0x8b, 0x47, 0x08,
       // add rax, [rsp-8]
       0x48, 0x03, 0x44, 0x24, 0xf8,
@@ -2689,7 +2762,7 @@ TEST compile_code_with_params_and_freevars(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rax, [rdi+8]
+      // mov rax, [Closure+8]
       0x48, 0x8b, 0x47, 0x08,
       // mov [rsp-16], rax
       0x48, 0x89, 0x44, 0x24, 0xf0,
@@ -2712,7 +2785,9 @@ TEST compile_labels_with_no_labels(Buffer *buf) {
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rsi, rdi
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
       0x48, 0x89, 0xfe,
       // mov rax, 0x2
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
@@ -2738,7 +2813,9 @@ TEST compile_labels_with_one_label(Buffer *buf) {
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
       // ret
       0xc3,
-      // mov rsi, rdi
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
       0x48, 0x89, 0xfe,
       // mov rax, 0x2
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
@@ -2754,9 +2831,9 @@ TEST compile_labels_with_one_label(Buffer *buf) {
   PASS();
 }
 
-TEST compile_labelcall_with_no_params(Buffer *buf) {
+TEST compile_funcall_with_no_params(Buffer *buf, uword *heap) {
   ASTNode *node =
-      Reader_read("(labels ((const (code () () 5))) (labelcall const))");
+      Reader_read("(labels ((const (code () () 5))) ((closure const)))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2765,25 +2842,53 @@ TEST compile_labelcall_with_no_params(Buffer *buf) {
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
       // ret
       0xc3,
-      // mov rsi, rdi
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
       0x48, 0x89, 0xfe,
-      // call `const`
-      0xe8, 0xf0, 0xff, 0xff, 0xff,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0  (code offset)
+      0x48, 0x05, 0x00, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x8 (label + 0 freevars)
+      0x48, 0x81, 0xc6, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-8], rdi  save closure
+      0x48, 0x89, 0x7c, 0x24, 0xf8,
+      // mov rdi, rax
+      0x48, 0x89, 0xc7,
+      // sub rdi, 0x6
+      0x48, 0x81, 0xef, 0x06, 0x00, 0x00, 0x00,
+      // mov rax, [Closure]   closure[label]
+      0x48, 0x8b, 0x47, 0x00,
+      // sub rsp, 8
+      0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
+      // call near rax (const)
+      0xff, 0xd0,
+      // add rsp, 8
+      0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
+      // mov rdi, [rsp-8]  reload closure
+      0x48, 0x8b, 0x7c, 0x24, 0xf8,
       // ret
       0xc3,
   };
   // clang-format on
   EXPECT_EQUALS_BYTES(buf, expected);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(5), result, "0x%lx");
   AST_heap_free(node);
   PASS();
 }
 
-TEST compile_labelcall_with_no_params_and_locals(Buffer *buf) {
+TEST compile_funcall_with_no_params_and_locals(Buffer *buf, uword *heap) {
   ASTNode *node = Reader_read(
-      "(labels ((const (code () () 5))) (let ((a 1)) (labelcall const)))");
+      "(labels ((const (code () () 5))) (let ((a 1)) ((closure const))))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2792,33 +2897,57 @@ TEST compile_labelcall_with_no_params_and_locals(Buffer *buf) {
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
       // ret
       0xc3,
-      // mov rsi, rdi
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
       0x48, 0x89, 0xfe,
       // mov rax, compile(1)
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
       // mov [rsp-8], rax
       0x48, 0x89, 0x44, 0x24, 0xf8,
-      // sub rsp, 8
-      0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
-      // call `const`
-      0xe8, 0xdd, 0xff, 0xff, 0xff,
-      // add rsp, 8
-      0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0  (code offset)
+      0x48, 0x05, 0x00, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x8 (label + 0 freevars)
+      0x48, 0x81, 0xc6, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-16], rdi  save closure
+      0x48, 0x89, 0x7c, 0x24, 0xf0,
+      // mov rdi, rax
+      0x48, 0x89, 0xc7,
+      // sub rdi, 0x6
+      0x48, 0x81, 0xef, 0x06, 0x00, 0x00, 0x00,
+      // mov rax, [Closure]   closure[label]
+      0x48, 0x8b, 0x47, 0x00,
+      // sub rsp, 16
+      0x48, 0x81, 0xec, 0x10, 0x00, 0x00, 0x00,
+      // call near rax (const)
+      0xff, 0xd0,
+      // add rsp, 16
+      0x48, 0x81, 0xc4, 0x10, 0x00, 0x00, 0x00,
+      // mov rdi, [rsp-16]  reload closure
+      0x48, 0x8b, 0x7c, 0x24, 0xf0,
       // ret
       0xc3,
   };
   // clang-format on
   EXPECT_EQUALS_BYTES(buf, expected);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(5), result, "0x%lx");
   AST_heap_free(node);
   PASS();
 }
 
-TEST compile_labelcall_with_one_param(Buffer *buf) {
+TEST compile_funcall_with_one_param(Buffer *buf, uword *heap) {
   ASTNode *node =
-      Reader_read("(labels ((id (code (x) () x))) (labelcall id 5))");
+      Reader_read("(labels ((id (code (x) () x))) ((closure id) 5))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2827,21 +2956,49 @@ TEST compile_labelcall_with_one_param(Buffer *buf) {
       0x48, 0x8b, 0x44, 0x24, 0xf8,
       // ret
       0xc3,
-      // mov rsi, rdi
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
       0x48, 0x89, 0xfe,
       // mov rax, compile(5)
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
-      // mov [rsp-16], rax
-      0x48, 0x89, 0x44, 0x24, 0xf0,
-      // call `id`
-      0xe8, 0xe6, 0xff, 0xff, 0xff,
+      // mov [rsp-24], rax
+      0x48, 0x89, 0x44, 0x24, 0xe8,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0  (code offset)
+      0x48, 0x05, 0x00, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x8 (label + 0 freevars)
+      0x48, 0x81, 0xc6, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-8], rdi  save closure
+      0x48, 0x89, 0x7c, 0x24, 0xf8,
+      // mov rdi, rax
+      0x48, 0x89, 0xc7,
+      // sub rdi, 0x6
+      0x48, 0x81, 0xef, 0x06, 0x00, 0x00, 0x00,
+      // mov rax, [Closure]   closure[label]
+      0x48, 0x8b, 0x47, 0x00,
+      // sub rsp, 8
+      0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
+      // call near rax (const)
+      0xff, 0xd0,
+      // add rsp, 8
+      0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
+      // mov rdi, [rsp-8]  reload closure
+      0x48, 0x8b, 0x7c, 0x24, 0xf8,
       // ret
       0xc3,
   };
   // clang-format on
   EXPECT_EQUALS_BYTES(buf, expected);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(5), result, "0x%lx");
   AST_heap_free(node);
   PASS();
@@ -2857,9 +3014,9 @@ SUITE(object_tests) {
   RUN_TEST(address);
 }
 
-TEST compile_labelcall_with_one_param_and_locals(Buffer *buf) {
+TEST compile_funcall_with_one_param_and_locals(Buffer *buf, uword *heap) {
   ASTNode *node = Reader_read(
-      "(labels ((id (code (x) () x))) (let ((a 1)) (labelcall id 5)))");
+      "(labels ((id (code (x) () x))) (let ((a 1)) ((closure id) 5)))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
@@ -2868,7 +3025,9 @@ TEST compile_labelcall_with_one_param_and_locals(Buffer *buf) {
       0x48, 0x8b, 0x44, 0x24, 0xf8,
       // ret
       0xc3,
-      // mov rsi, rdi
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
       0x48, 0x89, 0xfe,
       // mov rax, compile(1)
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
@@ -2876,35 +3035,57 @@ TEST compile_labelcall_with_one_param_and_locals(Buffer *buf) {
       0x48, 0x89, 0x44, 0x24, 0xf8,
       // mov rax, compile(5)
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
-      // mov [rsp-24], rax
-      0x48, 0x89, 0x44, 0x24, 0xe8,
-      // sub rsp, 8
-      0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
-      // call `id`
-      0xe8, 0xd3, 0xff, 0xff, 0xff,
-      // add rsp, 8
-      0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-32], rax
+      0x48, 0x89, 0x44, 0x24, 0xe0,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0  (code offset)
+      0x48, 0x05, 0x00, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x8 (label + 0 freevars)
+      0x48, 0x81, 0xc6, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-16], rdi  save closure
+      0x48, 0x89, 0x7c, 0x24, 0xf0,
+      // mov rdi, rax
+      0x48, 0x89, 0xc7,
+      // sub rdi, 0x6
+      0x48, 0x81, 0xef, 0x06, 0x00, 0x00, 0x00,
+      // mov rax, [Closure]   closure[label]
+      0x48, 0x8b, 0x47, 0x00,
+      // sub rsp, 16
+      0x48, 0x81, 0xec, 0x10, 0x00, 0x00, 0x00,
+      // call near rax (const)
+      0xff, 0xd0,
+      // add rsp, 16
+      0x48, 0x81, 0xc4, 0x10, 0x00, 0x00, 0x00,
+      // mov rdi, [rsp-16]  reload closure
+      0x48, 0x8b, 0x7c, 0x24, 0xf0,
       // ret
       0xc3,
   };
   // clang-format on
   EXPECT_EQUALS_BYTES(buf, expected);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(5), result, "0x%lx");
   AST_heap_free(node);
   PASS();
 }
 
-TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
+TEST compile_funcall_with_two_params_and_locals(Buffer *buf, uword *heap) {
   ASTNode *node =
       Reader_read("(labels ((add (code (x y) () (+ x y)))) (let ((a "
-                  "1)) (labelcall add 5 a)))");
+                  "1)) ((closure add) 5 a)))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   // clang-format off
   byte expected[] = {
-      // mov rax, [rsp-16]
+      // mov rax, [rsp-8]
       0x48, 0x8b, 0x44, 0x24, 0xf0,
       // mov [rsp-24], rax
       0x48, 0x89, 0x44, 0x24, 0xe8,
@@ -2914,7 +3095,10 @@ TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
       0x48, 0x03, 0x44, 0x24, 0xe8,
       // ret
       0xc3,
-      // mov rsi, rdi
+
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
       0x48, 0x89, 0xfe,
       // mov rax, compile(1)
       0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
@@ -2922,66 +3106,88 @@ TEST compile_labelcall_with_two_params_and_locals(Buffer *buf) {
       0x48, 0x89, 0x44, 0x24, 0xf8,
       // mov rax, compile(5)
       0x48, 0xc7, 0xc0, 0x14, 0x00, 0x00, 0x00,
-      // mov [rsp-24], rax
-      0x48, 0x89, 0x44, 0x24, 0xe8,
-      // mov rax, [rsp-8]
-      0x48, 0x8b, 0x44, 0x24, 0xf8,
       // mov [rsp-32], rax
       0x48, 0x89, 0x44, 0x24, 0xe0,
-      // sub rsp, 8
-      0x48, 0x81, 0xec, 0x08, 0x00, 0x00, 0x00,
-      // call `add`
-      0xe8, 0xba, 0xff, 0xff, 0xff,
-      // add rsp, 8
-      0x48, 0x81, 0xc4, 0x08, 0x00, 0x00, 0x00,
+      // mov rax, [rsp-8]
+      0x48, 0x8b, 0x44, 0x24, 0xf8,
+      // mov [rsp-40], rax
+      0x48, 0x89, 0x44, 0x24, 0xd8,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0  (code offset)
+      0x48, 0x05, 0x00, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x8 (label + 0 freevars)
+      0x48, 0x81, 0xc6, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-16], rdi  save closure
+      0x48, 0x89, 0x7c, 0x24, 0xf0,
+      // mov rdi, rax
+      0x48, 0x89, 0xc7,
+      // sub rdi, 0x6
+      0x48, 0x81, 0xef, 0x06, 0x00, 0x00, 0x00,
+      // mov rax, [Closure]   closure[label]
+      0x48, 0x8b, 0x47, 0x00,
+      // sub rsp, 16
+      0x48, 0x81, 0xec, 0x10, 0x00, 0x00, 0x00,
+      // call near rax (const)
+      0xff, 0xd0,
+      // add rsp, 16
+      0x48, 0x81, 0xc4, 0x10, 0x00, 0x00, 0x00,
+      // mov rdi, [rsp-16]  reload closure
+      0x48, 0x8b, 0x7c, 0x24, 0xf0,
       // ret
       0xc3,
   };
   // clang-format on
   EXPECT_EQUALS_BYTES(buf, expected);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(6), result, "0x%lx");
   AST_heap_free(node);
   PASS();
 }
 
-TEST compile_nested_labelcall(Buffer *buf) {
+TEST compile_nested_funcall(Buffer *buf, uword *heap) {
   ASTNode *node = Reader_read("(labels ((add (code (x y) () (+ x y)))"
                               "         (sub (code (x y) () (- x y))))"
-                              "    (labelcall sub 4 (labelcall add 1 2)))");
+                              "    ((closure sub) 4 ((closure add) 1 2)))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(1), result, "0x%lx");
   AST_heap_free(node);
   PASS();
 }
 
-TEST compile_multilevel_labelcall(Buffer *buf) {
+TEST compile_multilevel_funcall(Buffer *buf, uword *heap) {
   ASTNode *node =
       Reader_read("(labels ((add (code (x y) () (+ x y)))"
-                  "         (add2 (code (x y) () (labelcall add x y))))"
-                  "    (labelcall add2 1 2))");
+                  "         (add2 (code (x y) () ((closure add) x y))))"
+                  "    ((closure add2) 1 2))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(3), result, "0x%lx");
   AST_heap_free(node);
   PASS();
 }
 
-TEST compile_factorial_labelcall(Buffer *buf) {
+TEST compile_factorial_funcall(Buffer *buf, uword *heap) {
   ASTNode *node = Reader_read(
       "(labels ((factorial (code (x) ()"
-      "            (if (< x 2) 1 (* x (labelcall factorial (- x 1)))))))"
-      "    (labelcall factorial 5))");
+      "            (if (< x 2) 1 (* x ((closure factorial) (- x 1)))))))"
+      "    ((closure factorial) 5))");
   int compile_result = Compile_entry(buf, node);
   ASSERT_EQ(compile_result, 0);
   Buffer_make_executable(buf);
-  uword result = Testing_execute_entry(buf, /*heap=*/NULL);
+  uword result = Testing_execute_entry(buf, heap);
   ASSERT_EQ_FMT(Object_encode_integer(120), result, "0x%lx");
   AST_heap_free(node);
   PASS();
@@ -2997,13 +3203,142 @@ TEST compile_closure_undefined_label(Buffer *buf) {
 }
 
 TEST compile_closure_no_freevars(Buffer *buf, uword *heap) {
-  ASTNode *node = Reader_read("(labels ((foo (code () () 1))) (closure foo))");
-  int compile_result = Compile_entry(buf, node);
+  ASTNode *node = Reader_read("(closure foo)");
+  uword closure_ptr = 0xe3;
+  Env labels = Env_bind("foo", closure_ptr, NULL);
+  Buffer_write_arr(buf, kEntryPrologue, sizeof kEntryPrologue);
+  int compile_result =
+      Compile_expr(buf, node, -kWordSize, /*varenv=*/NULL, &labels);
   ASSERT_EQ(compile_result, 0);
+  Emit_ret(buf);
+  // clang-format off
+  byte expected[] = {
+      // mov Code, rsi
+      0x48, 0x8b, 0xce,
+      // mov Heap, rdi
+      0x48, 0x89, 0xfe,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0xe3  (code offset)
+      0x48, 0x05, 0xe3, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x8 (label + 0 freevars)
+      0x48, 0x81, 0xc6, 0x08, 0x00, 0x00, 0x00,
+      // ret
+      0xc3,
+  };
+  // clang-format on
+  EXPECT_EQUALS_BYTES(buf, expected);
   Buffer_make_executable(buf);
   uword result = Testing_execute_entry(buf, heap);
   ASSERT(Object_is_closure(result));
-  ASSERT_EQ_FMT((uword)0, Object_closure_label(result), "%ld");
+  ASSERT_EQ_FMT((uword)(buf->address + closure_ptr),
+                Object_closure_label(result), "%ld");
+  AST_heap_free(node);
+  PASS();
+}
+
+TEST compile_closure_one_freevar(Buffer *buf, uword *heap) {
+  ASTNode *node = Reader_read("(closure foo 1)");
+  uword closure_ptr = 0xe3;
+  Env labels = Env_bind("foo", closure_ptr, NULL);
+  Buffer_write_arr(buf, kEntryPrologue, sizeof kEntryPrologue);
+  int compile_result =
+      Compile_expr(buf, node, -kWordSize, /*varenv=*/NULL, &labels);
+  ASSERT_EQ(compile_result, 0);
+  Emit_ret(buf);
+  // clang-format off
+  byte expected[] = {
+      // mov rax, compile(1)
+      0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
+      // mov [rsp-8], rax
+      0x48, 0x89, 0x44, 0x24, 0xf8,
+      // mov rax, [rsp - 8]
+      0x48, 0x8b, 0x44, 0x24, 0xf8,
+      // mov [Heap + 8], rax
+      0x48, 0x89, 0x46, 0x08,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0xe3  (code offset)
+      0x48, 0x05, 0xe3, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x10 (label + 1 freevar)
+      0x48, 0x81, 0xc6, 0x10, 0x00, 0x00, 0x00,
+  };
+  // clang-format on
+  EXPECT_ENTRY_CONTAINS_CODE(buf, expected);
+  Buffer_make_executable(buf);
+  uword result = Testing_execute_entry(buf, heap);
+  ASSERT(Object_is_closure(result));
+  ASSERT_EQ_FMT((uword)(buf->address + closure_ptr),
+                Object_closure_label(result), "%ld");
+  ASSERT_EQ_FMT(Object_encode_integer(1), Object_closure_freevar(result, 0),
+                "%ld");
+  AST_heap_free(node);
+  PASS();
+}
+
+TEST compile_closure_two_freevars(Buffer *buf, uword *heap) {
+  ASTNode *node = Reader_read("(closure foo 1 2)");
+  uword closure_ptr = 0xe3;
+  Env labels = Env_bind("foo", closure_ptr, NULL);
+  Buffer_write_arr(buf, kEntryPrologue, sizeof kEntryPrologue);
+  int compile_result =
+      Compile_expr(buf, node, -kWordSize, /*varenv=*/NULL, &labels);
+  ASSERT_EQ(compile_result, 0);
+  Emit_ret(buf);
+  // clang-format off
+  byte expected[] = {
+      // mov rax, compile(1)
+      0x48, 0xc7, 0xc0, 0x04, 0x00, 0x00, 0x00,
+      // mov [rsp-8], rax
+      0x48, 0x89, 0x44, 0x24, 0xf8,
+      // mov rax, compile(2)
+      0x48, 0xc7, 0xc0, 0x08, 0x00, 0x00, 0x00,
+      // mov [rsp-16], rax
+      0x48, 0x89, 0x44, 0x24, 0xf0,
+      // mov rax, [rsp - 16]
+      0x48, 0x8b, 0x44, 0x24, 0xf0,
+      // mov [Heap + 16], rax
+      0x48, 0x89, 0x46, 0x10,
+      // mov rax, [rsp - 8]
+      0x48, 0x8b, 0x44, 0x24, 0xf8,
+      // mov [Heap + 8], rax
+      0x48, 0x89, 0x46, 0x08,
+      // mov rax, Code
+      0x48, 0x89, 0xc8,
+      // add rax, 0xe3  (code offset)
+      0x48, 0x05, 0xe3, 0x00, 0x00, 0x00,
+      // mov qword [Heap], rax
+      0x48, 0x89, 0x46, 0x00,
+      // mov rax, Heap
+      0x48, 0x89, 0xf0,
+      // or rax, 6
+      0x48, 0x83, 0xc8, 0x06,
+      // add Heap, 0x18 (label + 2 freevars)
+      0x48, 0x81, 0xc6, 0x18, 0x00, 0x00, 0x00,
+  };
+  // clang-format on
+  EXPECT_ENTRY_CONTAINS_CODE(buf, expected);
+  Buffer_make_executable(buf);
+  uword result = Testing_execute_entry(buf, heap);
+  ASSERT(Object_is_closure(result));
+  ASSERT_EQ_FMT((uword)(buf->address + closure_ptr),
+                Object_closure_label(result), "%ld");
+  ASSERT_EQ_FMT(Object_encode_integer(1), Object_closure_freevar(result, 0),
+                "%ld");
+  ASSERT_EQ_FMT(Object_encode_integer(2), Object_closure_freevar(result, 1),
+                "%ld");
   AST_heap_free(node);
   PASS();
 }
@@ -3096,16 +3431,18 @@ SUITE(compiler_tests) {
   RUN_BUFFER_TEST(compile_code_with_params_and_freevars);
   RUN_BUFFER_TEST(compile_labels_with_no_labels);
   RUN_BUFFER_TEST(compile_labels_with_one_label);
-  RUN_BUFFER_TEST(compile_labelcall_with_no_params);
-  RUN_BUFFER_TEST(compile_labelcall_with_no_params_and_locals);
-  RUN_BUFFER_TEST(compile_labelcall_with_one_param);
-  RUN_BUFFER_TEST(compile_labelcall_with_one_param_and_locals);
-  RUN_BUFFER_TEST(compile_labelcall_with_two_params_and_locals);
-  RUN_BUFFER_TEST(compile_nested_labelcall);
-  RUN_BUFFER_TEST(compile_multilevel_labelcall);
-  RUN_BUFFER_TEST(compile_factorial_labelcall);
+  RUN_HEAP_TEST(compile_funcall_with_no_params);
+  RUN_HEAP_TEST(compile_funcall_with_no_params_and_locals);
+  RUN_HEAP_TEST(compile_funcall_with_one_param);
+  RUN_HEAP_TEST(compile_funcall_with_one_param_and_locals);
+  RUN_HEAP_TEST(compile_funcall_with_two_params_and_locals);
+  RUN_HEAP_TEST(compile_nested_funcall);
+  RUN_HEAP_TEST(compile_multilevel_funcall);
+  RUN_HEAP_TEST(compile_factorial_funcall);
   RUN_BUFFER_TEST(compile_closure_undefined_label);
   RUN_HEAP_TEST(compile_closure_no_freevars);
+  RUN_HEAP_TEST(compile_closure_one_freevar);
+  RUN_HEAP_TEST(compile_closure_two_freevars);
 }
 
 // End Tests
