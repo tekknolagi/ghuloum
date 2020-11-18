@@ -6,7 +6,8 @@
 // https://course.ccs.neu.edu/cs4410sp20/lec_let-and-stack_notes.html#%28part._let._.Growing_the_language__adding_let%29
 
 #define _GNU_SOURCE
-#include <assert.h>   // for assert
+#include <assert.h> // for assert
+#include <stdarg.h>
 #include <stdbool.h>  // for bool
 #include <stddef.h>   // for NULL
 #include <stdint.h>   // for int32_t, etc
@@ -21,8 +22,8 @@
 
 // Objects
 
-typedef int64_t word;
-typedef uint64_t uword;
+typedef intptr_t word;
+typedef uintptr_t uword;
 
 const int kBitsPerByte = 8;                        // bits
 const int kWordSize = sizeof(word);                // bytes
@@ -37,7 +38,7 @@ const word kIntegerMin = -(1LL << (kIntegerBits - 1));
 
 const unsigned int kImmediateTagMask = 0x3f;
 
-const unsigned int kCharTag = 0xf;   // 0b00001111
+const unsigned int kCharTag = 0x0f;  // 0b00001111
 const unsigned int kCharMask = 0xff; // 0b11111111
 const unsigned int kCharShift = 8;
 
@@ -102,7 +103,7 @@ uword Object_nil() { return kNilTag; }
 
 uword Object_error() { return kErrorTag; }
 
-uword Object_address(void *obj) { return (uword)obj & kHeapPtrMask; }
+uword Object_address(const void *obj) { return (uword)obj & kHeapPtrMask; }
 
 bool Object_is_pair(uword value) { return (value & kHeapTagMask) == kPairTag; }
 
@@ -338,7 +339,7 @@ byte sib(Register base, Index index, Scale scale) {
 void Emit_mov_reg_imm32(Buffer *buf, Register dst, int32_t src) {
   Buffer_write8(buf, kRexPrefix);
   Buffer_write8(buf, 0xc7);
-  Buffer_write8(buf, modrm(/*direct*/ 3, dst, 0));
+  Buffer_write8(buf, modrm(kModDirect, dst, 0));
   Buffer_write32(buf, src);
 }
 
@@ -352,7 +353,7 @@ void Emit_add_reg_imm32(Buffer *buf, Register dst, int32_t src) {
     Buffer_write8(buf, 0x05);
   } else {
     Buffer_write8(buf, 0x81);
-    Buffer_write8(buf, modrm(/*direct*/ 3, dst, 0));
+    Buffer_write8(buf, modrm(kModDirect, dst, 0));
   }
   Buffer_write32(buf, src);
 }
@@ -365,7 +366,7 @@ void Emit_sub_reg_imm32(Buffer *buf, Register dst, int32_t src) {
     Buffer_write8(buf, 0x2d);
   } else {
     Buffer_write8(buf, 0x81);
-    Buffer_write8(buf, modrm(/*direct*/ 3, dst, 5));
+    Buffer_write8(buf, modrm(kModDirect, dst, 5));
   }
   Buffer_write32(buf, src);
 }
@@ -373,28 +374,28 @@ void Emit_sub_reg_imm32(Buffer *buf, Register dst, int32_t src) {
 void Emit_shl_reg_imm8(Buffer *buf, Register dst, int8_t bits) {
   Buffer_write8(buf, kRexPrefix);
   Buffer_write8(buf, 0xc1);
-  Buffer_write8(buf, modrm(/*direct*/ 3, dst, 4));
+  Buffer_write8(buf, modrm(kModDirect, dst, 4));
   Buffer_write8(buf, bits);
 }
 
 void Emit_shr_reg_imm8(Buffer *buf, Register dst, int8_t bits) {
   Buffer_write8(buf, kRexPrefix);
   Buffer_write8(buf, 0xc1);
-  Buffer_write8(buf, modrm(/*direct*/ 3, dst, 5));
+  Buffer_write8(buf, modrm(kModDirect, dst, 5));
   Buffer_write8(buf, bits);
 }
 
 void Emit_or_reg_imm8(Buffer *buf, Register dst, uint8_t tag) {
   Buffer_write8(buf, kRexPrefix);
   Buffer_write8(buf, 0x83);
-  Buffer_write8(buf, modrm(/*direct*/ 3, dst, 1));
+  Buffer_write8(buf, modrm(kModDirect, dst, 1));
   Buffer_write8(buf, tag);
 }
 
 void Emit_and_reg_imm8(Buffer *buf, Register dst, uint8_t tag) {
   Buffer_write8(buf, kRexPrefix);
   Buffer_write8(buf, 0x83);
-  Buffer_write8(buf, modrm(/*direct*/ 3, dst, 4));
+  Buffer_write8(buf, modrm(kModDirect, dst, 4));
   Buffer_write8(buf, tag);
 }
 
@@ -406,7 +407,7 @@ void Emit_cmp_reg_imm32(Buffer *buf, Register left, int32_t right) {
     Buffer_write8(buf, 0x3d);
   } else {
     Buffer_write8(buf, 0x81);
-    Buffer_write8(buf, modrm(/*direct*/ 3, left, 7));
+    Buffer_write8(buf, modrm(kModDirect, left, 7));
   }
   Buffer_write32(buf, right);
 }
@@ -422,10 +423,10 @@ uint8_t disp8(int8_t disp) { return disp >= 0 ? disp : 0x100 + disp; }
 
 void Emit_address_disp8(Buffer *buf, Register direct, Indirect indirect) {
   if (indirect.reg == kRsp) {
-    Buffer_write8(buf, modrm(/*disp8*/ 1, kIndexNone, direct));
+    Buffer_write8(buf, modrm(kModDisp8, kIndexNone, direct));
     Buffer_write8(buf, sib(kRsp, kIndexNone, Scale1));
   } else {
-    Buffer_write8(buf, modrm(/*disp8*/ 1, indirect.reg, direct));
+    Buffer_write8(buf, modrm(kModDisp8, indirect.reg, direct));
   }
   Buffer_write8(buf, disp8(indirect.disp));
 }
@@ -510,7 +511,7 @@ void Emit_backpatch_imm32(Buffer *buf, int32_t target_pos) {
 void Emit_mov_reg_reg(Buffer *buf, Register dst, Register src) {
   Buffer_write8(buf, kRexPrefix);
   Buffer_write8(buf, 0x89);
-  Buffer_write8(buf, modrm(/*direct*/ 3, dst, src));
+  Buffer_write8(buf, modrm(kModDirect, dst, src));
 }
 
 // mov [dst+disp], imm32
@@ -609,8 +610,9 @@ ASTNode *AST_error() { return (ASTNode *)Object_error(); }
 
 ASTNode *AST_heap_alloc(unsigned char tag, uword size) {
   // Initialize to 0
-  uword address = (uword)calloc(size, 1);
-  return (ASTNode *)(address | tag);
+  void *address = calloc(size, 1);
+  assert(address != NULL && "allocation failed");
+  return (ASTNode *)((uword)address | tag);
 }
 
 bool AST_is_heap_object(ASTNode *node) {
@@ -877,6 +879,152 @@ ASTNode *Reader_read(char *input) {
 
 // End Reader
 
+// Transformer
+
+ASTNode *operand1(ASTNode *args) { return AST_pair_car(args); }
+
+ASTNode *operand2(ASTNode *args) { return AST_pair_car(AST_pair_cdr(args)); }
+
+ASTNode *operand3(ASTNode *args) {
+  return AST_pair_car(AST_pair_cdr(AST_pair_cdr(args)));
+}
+
+static word gensym_idx = 0;
+
+word gensym_next() { return gensym_idx++; }
+
+void gensym_reset() { gensym_idx = 0; }
+
+const char *gensym() {
+  char buf[128];
+  snprintf(buf, sizeof buf, "f%ld", gensym_next());
+  return strdup(buf);
+}
+
+bool set_contains(ASTNode *set, const char *name) {
+  if (AST_is_nil(set)) {
+    return false;
+  }
+  assert(AST_is_pair(set));
+  ASTNode *elt = AST_pair_car(set);
+  if (AST_symbol_matches(elt, name)) {
+    return true;
+  }
+  return set_contains(AST_pair_cdr(set), name);
+}
+
+ASTNode *set_merge(ASTNode *left, ASTNode *right) {
+  if (AST_is_nil(left)) {
+    return right;
+  }
+  ASTNode *elt = AST_pair_car(left);
+  ASTNode *rest = AST_pair_cdr(left);
+  const char *name = AST_symbol_cstr(elt);
+  if (set_contains(rest, name) || set_contains(right, name)) {
+    return set_merge(rest, right);
+  }
+  return AST_new_pair(elt, set_merge(AST_pair_cdr(left), right));
+}
+
+ASTNode *bindings_names(ASTNode *bindings) {
+  if (AST_is_nil(bindings)) {
+    return bindings;
+  }
+  return AST_new_pair(AST_pair_car(AST_pair_car(bindings)),
+                      bindings_names(AST_pair_cdr(bindings)));
+}
+
+ASTNode *free_in_rec(ASTNode *node, ASTNode *bound) {
+  if (AST_is_integer(node) || AST_is_char(node) || AST_is_bool(node) ||
+      AST_is_nil(node)) {
+    // Nothing free; nothing referenced
+    return AST_nil();
+  }
+  if (AST_is_symbol(node)) {
+    if (AST_symbol_matches(node, "if") || AST_symbol_matches(node, "let") ||
+        AST_symbol_matches(node, "lambda") ||
+        AST_symbol_matches(node, "closure") ||
+        AST_symbol_matches(node, "quote") || AST_symbol_matches(node, "+") ||
+        AST_symbol_matches(node, "apply")) {
+      // Nothing free; special names are not variable references
+      return AST_nil();
+    }
+    if (set_contains(bound, AST_symbol_cstr(node))) {
+      // Nothing free; name is bound
+      return AST_nil();
+    }
+    return AST_new_pair(node, AST_nil());
+  }
+  assert(AST_is_pair(node));
+  ASTNode *callable = AST_pair_car(node);
+  ASTNode *args = AST_pair_cdr(node);
+  if (AST_is_symbol(callable)) {
+    // Handle special forms that bind variables
+    if (AST_symbol_matches(callable, "let")) {
+      ASTNode *bindings = operand1(args);
+      ASTNode *freevars_bindings = AST_nil();
+      ASTNode *names = bindings_names(bindings);
+      while (!AST_is_nil(bindings)) {
+        ASTNode *binding_value = AST_pair_cdr(AST_pair_car(bindings));
+        freevars_bindings =
+            set_merge(freevars_bindings, free_in_rec(binding_value, bound));
+        bindings = AST_pair_cdr(bindings);
+      }
+      ASTNode *body = operand2(args);
+      ASTNode *new_bound = set_merge(names, bound);
+      ASTNode *freevars_body = free_in_rec(body, new_bound);
+      return set_merge(freevars_bindings, freevars_body);
+    }
+    if (AST_symbol_matches(callable, "lambda")) {
+      ASTNode *params = operand1(args);
+      ASTNode *body = operand2(args);
+      return free_in_rec(body, set_merge(bound, params));
+    }
+  }
+  // Handle some call (fn arg0 arg1 ...)
+  ASTNode *freevars = free_in_rec(callable, bound);
+  while (!AST_is_nil(args)) {
+    assert(AST_is_pair(args));
+    ASTNode *arg = AST_pair_car(args);
+    freevars = set_merge(freevars, free_in_rec(arg, bound));
+    args = AST_pair_cdr(args);
+  }
+  return freevars;
+}
+
+ASTNode *free_in(ASTNode *node) { return free_in_rec(node, AST_nil()); }
+
+ASTNode *list1(ASTNode *item0) { return AST_new_pair(item0, AST_nil()); }
+
+ASTNode *list2(ASTNode *item0, ASTNode *item1) {
+  return AST_new_pair(item0, list1(item1));
+}
+
+ASTNode *list3(ASTNode *item0, ASTNode *item1, ASTNode *item2) {
+  return AST_new_pair(item0, list2(item1, item2));
+}
+
+ASTNode *list4(ASTNode *item0, ASTNode *item1, ASTNode *item2, ASTNode *item3) {
+  return AST_new_pair(item0, list3(item1, item2, item3));
+}
+
+ASTNode *annotate_lambda(ASTNode *params, ASTNode *body) {
+  assert(AST_is_pair(params));
+  ASTNode *freevars = free_in_rec(body, params);
+  return list4(AST_new_symbol("lambda"), params, freevars, body);
+}
+
+// ASTNode *Transform(ASTNode *node) {
+//   if (AST_is_integer(node) || AST_is_char(node) || AST_is_bool(node) ||
+//   AST_is_nil(node) || AST_is_symbol(node)) {
+//     // Nothing to traverse and transform
+//     return node;
+//   }
+//   assert(AST_is_pair(node));
+// }
+
+// End Transformer
+
 // Env
 
 typedef struct Env {
@@ -905,14 +1053,6 @@ bool Env_find(Env *env, const char *key, word *result) {
 
 WARN_UNUSED int Compile_expr(Buffer *buf, ASTNode *node, word stack_index,
                              Env *varenv, Env *labels);
-
-ASTNode *operand1(ASTNode *args) { return AST_pair_car(args); }
-
-ASTNode *operand2(ASTNode *args) { return AST_pair_car(AST_pair_cdr(args)); }
-
-ASTNode *operand3(ASTNode *args) {
-  return AST_pair_car(AST_pair_cdr(AST_pair_cdr(args)));
-}
 
 #define _(exp)                                                                 \
   do {                                                                         \
@@ -1475,16 +1615,6 @@ WARN_UNUSED int Testing_compile_expr_entry(Buffer *buf, ASTNode *node) {
     Buffer_deinit(&buf);                                                       \
   } while (0)
 
-ASTNode *list1(ASTNode *item0) { return AST_new_pair(item0, AST_nil()); }
-
-ASTNode *list2(ASTNode *item0, ASTNode *item1) {
-  return AST_new_pair(item0, list1(item1));
-}
-
-ASTNode *list3(ASTNode *item0, ASTNode *item1, ASTNode *item2) {
-  return AST_new_pair(item0, list2(item1, item2));
-}
-
 ASTNode *new_unary_call(const char *name, ASTNode *arg) {
   return list2(AST_new_symbol(name), arg);
 }
@@ -1546,7 +1676,7 @@ TEST emit_mov_reg_imm32_emits_modrm(Buffer *buf) {
   Emit_mov_reg_imm32(buf, kRax, 100);
   byte expected[] = {0x48, 0xc7, 0xc0, 0x64, 0x00, 0x00, 0x00};
   EXPECT_EQUALS_BYTES(buf, expected);
-  ASSERT_EQ_FMT(modrm(/*direct*/ 3, kRax, 0), 0xc0, "0x%.2x");
+  ASSERT_EQ_FMT(modrm(kModDirect, kRax, 0), 0xc0, "0x%.2x");
   PASS();
 }
 
@@ -1554,7 +1684,7 @@ TEST emit_store_reg_indirect_emits_modrm_sib(Buffer *buf) {
   Emit_store_reg_indirect(buf, Ind(kRsp, -8), kRax);
   byte expected[] = {0x48, 0x89, 0x44, 0x24, 0xf8};
   EXPECT_EQUALS_BYTES(buf, expected);
-  ASSERT_EQ_FMT(modrm(/*disp8*/ 1, kIndexNone, kRax), 0x44, "0x%.2x");
+  ASSERT_EQ_FMT(modrm(kModDisp8, kIndexNone, kRax), 0x44, "0x%.2x");
   ASSERT_EQ_FMT(sib(kRsp, kIndexNone, Scale1), 0x24, "0x%.2x");
   PASS();
 }
@@ -3373,6 +3503,161 @@ SUITE(buffer_tests) {
   RUN_BUFFER_TEST(emit_store_reg_indirect_emits_modrm_sib);
 }
 
+TEST free_in_with_immediate_returns_nil() {
+  ASSERT(AST_is_nil(free_in(AST_new_integer(5))));
+  ASSERT(AST_is_nil(free_in(AST_new_char('a'))));
+  ASSERT(AST_is_nil(free_in(AST_new_bool(true))));
+  ASSERT(AST_is_nil(free_in(AST_nil())));
+  PASS();
+}
+
+TEST is_list_with_names(ASTNode *list, word n, ...) {
+  if (!AST_is_pair(list)) {
+    FAILm("Not a list");
+  }
+  va_list vl;
+  va_start(vl, n);
+  for (word i = 0; i < n; i++) {
+    if (AST_is_nil(list)) {
+      FAILm("List smaller than expected");
+    }
+    ASTNode *elt = AST_pair_car(list);
+    if (!AST_is_symbol(elt)) {
+      FAILm("List had non-symbol element");
+    }
+    const char *expected = va_arg(vl, const char *);
+    if (!AST_symbol_matches(elt, expected)) {
+      FAILm("List element does not match expected");
+    }
+    list = AST_pair_cdr(list);
+  }
+  if (!AST_is_nil(list)) {
+    abort();
+    FAILm("List larger than expected");
+  }
+  PASS();
+}
+
+TEST free_in_with_symbol_returns_list() {
+  {
+    ASTNode *result = free_in(AST_new_symbol("foo"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  PASS();
+}
+
+TEST free_in_with_if() {
+  {
+    ASTNode *result = free_in(Reader_read("(if 1 2 3)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(if foo 2 3)"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(if 1 foo 3)"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(if 1 2 foo)"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(if foo 2 bar)"));
+    CHECK_CALL(is_list_with_names(result, 2, "foo", "bar"));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(if foo 2 foo)"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  PASS();
+}
+
+TEST free_in_with_let() {
+  {
+    ASTNode *result = free_in(Reader_read("(let () 1)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(let () foo)"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(let ((foo 1)) 1)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(let ((foo 1) (bar 2)) foo)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(let ((foo foo)) foo)"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(let ((foo bar) (bar 3)) foo)"));
+    CHECK_CALL(is_list_with_names(result, 1, "bar"));
+  }
+  {
+    ASTNode *result =
+        free_in(Reader_read("(let ((foo 1)) (let ((bar 2)) (+ foo bar)))"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result =
+        free_in(Reader_read("(let ((foo 1)) (let ((baz 2)) (+ foo bar)))"));
+    CHECK_CALL(is_list_with_names(result, 1, "bar"));
+  }
+  PASS();
+}
+
+TEST free_in_with_lambda() {
+  {
+    ASTNode *result = free_in(Reader_read("(lambda () 1)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(lambda () (+ foo 1))"));
+    CHECK_CALL(is_list_with_names(result, 1, "foo"));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(lambda (foo) 1)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(lambda (foo bar) foo)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(lambda (foo) foo)"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result = free_in(Reader_read("(lambda (foo) (+ foo bar))"));
+    CHECK_CALL(is_list_with_names(result, 1, "bar"));
+  }
+  {
+    ASTNode *result =
+        free_in(Reader_read("(lambda (foo) (lambda (bar) (+ foo bar)))"));
+    ASSERT(AST_is_nil(result));
+  }
+  {
+    ASTNode *result =
+        free_in(Reader_read("(lambda (foo) (lambda (baz) (+ foo bar)))"));
+    CHECK_CALL(is_list_with_names(result, 1, "bar"));
+  }
+  PASS();
+}
+
+SUITE(transform_tests) {
+  RUN_TEST(free_in_with_immediate_returns_nil);
+  RUN_TEST(free_in_with_symbol_returns_list);
+  RUN_TEST(free_in_with_if);
+  RUN_TEST(free_in_with_let);
+  RUN_TEST(free_in_with_lambda);
+}
+
 SUITE(compiler_tests) {
   RUN_BUFFER_TEST(compile_positive_integer);
   RUN_BUFFER_TEST(compile_negative_integer);
@@ -3455,8 +3740,12 @@ int run_tests(int argc, char **argv) {
   RUN_SUITE(ast_tests);
   RUN_SUITE(reader_tests);
   RUN_SUITE(buffer_tests);
+  RUN_SUITE(transform_tests);
   RUN_SUITE(compiler_tests);
   GREATEST_MAIN_END();
 }
 
-int main(int argc, char **argv) { return run_tests(argc, argv); }
+int main(int argc, char **argv) {
+  assert(sizeof(word) == 8);
+  return run_tests(argc, argv);
+}
