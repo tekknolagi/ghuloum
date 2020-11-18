@@ -5,6 +5,7 @@
 // In general: https://course.ccs.neu.edu/cs4410sp20/#%28part._lectures%29
 // https://course.ccs.neu.edu/cs4410sp20/lec_let-and-stack_notes.html#%28part._let._.Growing_the_language__adding_let%29
 
+// _GNU_SOURCE is used for MAP_ANONYMOUS in sys/mman.h and strdup in string.h
 #define _GNU_SOURCE
 #include <assert.h> // for assert
 #include <stdarg.h>
