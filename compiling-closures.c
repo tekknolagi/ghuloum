@@ -1026,7 +1026,7 @@ ASTNode *list4(ASTNode *item0, ASTNode *item1, ASTNode *item2, ASTNode *item3) {
   return AST_new_pair(item0, list3(item1, item2, item3));
 }
 
-bool is_lambda(ASTNode *node) {
+bool is_tagged_with(ASTNode *node, const char *expected) {
   if (!AST_is_pair(node)) {
     return false;
   }
@@ -1034,26 +1034,57 @@ bool is_lambda(ASTNode *node) {
   if (!AST_is_symbol(tag)) {
     return false;
   }
-  return AST_symbol_matches(tag, "lambda");
+  return AST_symbol_matches(tag, expected);
 }
 
-ASTNode *annotate_lambda(ASTNode *node) {
-  assert(is_lambda(node));
+ASTNode *Transform(ASTNode *node);
+
+ASTNode *Transform_lambda(ASTNode *node) {
+  assert(is_tagged_with(node, "lambda"));
   ASTNode *args = AST_pair_cdr(node);
   ASTNode *params = operand1(args);
   ASTNode *body = operand2(args);
   ASTNode *freevars = free_in_rec(body, params);
-  return list4(AST_new_symbol("lambda"), params, freevars, body);
+  return list4(AST_new_symbol("lambda"), params, freevars, Transform(body));
 }
 
-// ASTNode *Transform(ASTNode *node) {
-//   if (AST_is_integer(node) || AST_is_char(node) || AST_is_bool(node) ||
-//   AST_is_nil(node) || AST_is_symbol(node)) {
-//     // Nothing to traverse and transform
-//     return node;
-//   }
-//   assert(AST_is_pair(node));
-// }
+ASTNode *Transform_list(ASTNode *node) {
+  if (AST_is_nil(node)) {
+    return node;
+  }
+  return AST_new_pair(Transform(AST_pair_car(node)),
+                      Transform_list(AST_pair_cdr(node)));
+}
+
+ASTNode *Transform_bindings(ASTNode *node) {
+  if (AST_is_nil(node)) {
+    return node;
+  }
+  ASTNode *binding = AST_pair_car(node);
+  ASTNode *name = AST_pair_car(binding);
+  ASTNode *value = AST_pair_car(AST_pair_cdr(binding));
+  return AST_new_pair(list2(name, Transform(value)),
+                      Transform_bindings(AST_pair_cdr(node)));
+}
+
+ASTNode *Transform(ASTNode *node) {
+  if (AST_is_integer(node) || AST_is_char(node) || AST_is_bool(node) ||
+      AST_is_nil(node) || AST_is_symbol(node)) {
+    // Nothing to traverse and transform
+    return node;
+  }
+  if (is_tagged_with(node, "lambda")) {
+    return Transform_lambda(node);
+  }
+  if (is_tagged_with(node, "let")) {
+    ASTNode *args = AST_pair_cdr(node);
+    ASTNode *bindings = operand1(args);
+    ASTNode *body = operand2(args);
+    return list3(AST_pair_car(node), Transform_bindings(bindings),
+                 Transform(body));
+  }
+  return Transform_list(node);
+}
 
 // End Transformer
 
@@ -3683,7 +3714,7 @@ TEST free_in_with_lambda() {
 }
 
 TEST is_lambda_with_freevars(ASTNode *node, word n, ...) {
-  if (!is_lambda(node)) {
+  if (!is_tagged_with(node, "lambda")) {
     FAILm("Not a lambda");
   }
   ASTNode *args = AST_pair_cdr(node);
@@ -3717,19 +3748,54 @@ TEST is_lambda_with_freevars(ASTNode *node, word n, ...) {
   PASS();
 }
 
-TEST annotate_lambda_adds_freevars() {
+TEST transform_lambda_adds_freevars() {
   {
-    ASTNode *result = annotate_lambda(Reader_read("(lambda () a)"));
+    ASTNode *result = Transform_lambda(Reader_read("(lambda () a)"));
     CHECK_CALL(is_lambda_with_freevars(result, 1, "a"));
   }
   {
-    ASTNode *result = annotate_lambda(Reader_read("(lambda () (+ a b))"));
+    ASTNode *result = Transform_lambda(Reader_read("(lambda () (+ a b))"));
     CHECK_CALL(is_lambda_with_freevars(result, 2, "a", "b"));
   }
   {
     ASTNode *result =
-        annotate_lambda(Reader_read("(lambda (y) (lambda () (+ x y)))"));
+        Transform_lambda(Reader_read("(lambda (y) (lambda () (+ x y)))"));
     CHECK_CALL(is_lambda_with_freevars(result, 1, "x"));
+  }
+  PASS();
+}
+
+TEST transform_let() {
+  {
+    ASTNode *result = Transform(Reader_read("(let () (lambda () a))"));
+    ASSERT(is_tagged_with(result, "let"));
+    ASTNode *bindings = AST_pair_car(AST_pair_cdr(result));
+    ASSERT(AST_is_nil(bindings));
+    ASTNode *body = AST_pair_car(AST_pair_cdr(AST_pair_cdr(result)));
+    CHECK_CALL(is_lambda_with_freevars(body, 1, "a"));
+  }
+  {
+    ASTNode *result = Transform(Reader_read("(let ((a (lambda () a))) 1)"));
+    ASSERT(is_tagged_with(result, "let"));
+    ASTNode *bindings = AST_pair_car(AST_pair_cdr(result));
+    ASSERT(AST_is_pair(bindings));
+    ASTNode *binding = AST_pair_car(bindings);
+    ASTNode *value = AST_pair_car(AST_pair_cdr(binding));
+    CHECK_CALL(is_lambda_with_freevars(value, 1, "a"));
+  }
+  PASS();
+}
+
+TEST transform_arbitrary_call() {
+  {
+    ASTNode *result = Transform(Reader_read("((lambda () x) 1)"));
+    ASTNode *lambda = AST_pair_car(result);
+    CHECK_CALL(is_lambda_with_freevars(lambda, 1, "x"));
+  }
+  {
+    ASTNode *result = Transform(Reader_read("(foo (lambda () x) 1)"));
+    ASTNode *lambda = AST_pair_car(AST_pair_cdr(result));
+    CHECK_CALL(is_lambda_with_freevars(lambda, 1, "x"));
   }
   PASS();
 }
@@ -3740,7 +3806,9 @@ SUITE(transform_tests) {
   RUN_TEST(free_in_with_if);
   RUN_TEST(free_in_with_let);
   RUN_TEST(free_in_with_lambda);
-  RUN_TEST(annotate_lambda_adds_freevars);
+  RUN_TEST(transform_lambda_adds_freevars);
+  RUN_TEST(transform_let);
+  RUN_TEST(transform_arbitrary_call);
 }
 
 SUITE(compiler_tests) {
