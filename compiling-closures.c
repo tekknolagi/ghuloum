@@ -944,12 +944,14 @@ ASTNode *set_merge(ASTNode *left, ASTNode *right) {
   return AST_new_pair(elt, set_merge(AST_pair_cdr(left), right));
 }
 
-ASTNode *bindings_names(ASTNode *bindings) {
-  if (AST_is_nil(bindings)) {
-    return bindings;
+typedef ASTNode *MapFunction(ASTNode *node);
+
+ASTNode *map(MapFunction fn, ASTNode *node) {
+  if (AST_is_nil(node)) {
+    return node;
   }
-  return AST_new_pair(AST_pair_car(AST_pair_car(bindings)),
-                      bindings_names(AST_pair_cdr(bindings)));
+  ASTNode *elt = AST_pair_car(node);
+  return AST_new_pair((*fn)(elt), map(fn, AST_pair_cdr(node)));
 }
 
 ASTNode *free_in_rec(ASTNode *node, ASTNode *bound) {
@@ -981,7 +983,7 @@ ASTNode *free_in_rec(ASTNode *node, ASTNode *bound) {
     if (AST_symbol_matches(callable, "let")) {
       ASTNode *bindings = operand1(args);
       ASTNode *freevars_bindings = AST_nil();
-      ASTNode *names = bindings_names(bindings);
+      ASTNode *bindings_names = map(AST_pair_car, bindings);
       while (!AST_is_nil(bindings)) {
         ASTNode *binding_value = AST_pair_cdr(AST_pair_car(bindings));
         freevars_bindings =
@@ -989,7 +991,7 @@ ASTNode *free_in_rec(ASTNode *node, ASTNode *bound) {
         bindings = AST_pair_cdr(bindings);
       }
       ASTNode *body = operand2(args);
-      ASTNode *new_bound = set_merge(names, bound);
+      ASTNode *new_bound = set_merge(bindings_names, bound);
       ASTNode *freevars_body = free_in_rec(body, new_bound);
       return set_merge(freevars_bindings, freevars_body);
     }
@@ -1048,23 +1050,10 @@ ASTNode *Transform_lambda(ASTNode *node) {
   return list4(AST_new_symbol("lambda"), params, freevars, Transform(body));
 }
 
-ASTNode *Transform_list(ASTNode *node) {
-  if (AST_is_nil(node)) {
-    return node;
-  }
-  return AST_new_pair(Transform(AST_pair_car(node)),
-                      Transform_list(AST_pair_cdr(node)));
-}
-
-ASTNode *Transform_bindings(ASTNode *node) {
-  if (AST_is_nil(node)) {
-    return node;
-  }
-  ASTNode *binding = AST_pair_car(node);
+ASTNode *Transform_binding(ASTNode *binding) {
   ASTNode *name = AST_pair_car(binding);
   ASTNode *value = AST_pair_car(AST_pair_cdr(binding));
-  return AST_new_pair(list2(name, Transform(value)),
-                      Transform_bindings(AST_pair_cdr(node)));
+  return list2(name, Transform(value));
 }
 
 ASTNode *Transform(ASTNode *node) {
@@ -1080,10 +1069,10 @@ ASTNode *Transform(ASTNode *node) {
     ASTNode *args = AST_pair_cdr(node);
     ASTNode *bindings = operand1(args);
     ASTNode *body = operand2(args);
-    return list3(AST_pair_car(node), Transform_bindings(bindings),
+    return list3(AST_pair_car(node), map(Transform_binding, (bindings)),
                  Transform(body));
   }
-  return Transform_list(node);
+  return map(Transform, node);
 }
 
 // End Transformer
