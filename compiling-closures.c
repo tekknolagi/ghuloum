@@ -1008,8 +1008,22 @@ ASTNode *list4(ASTNode *item0, ASTNode *item1, ASTNode *item2, ASTNode *item3) {
   return AST_new_pair(item0, list3(item1, item2, item3));
 }
 
-ASTNode *annotate_lambda(ASTNode *params, ASTNode *body) {
-  assert(AST_is_pair(params));
+bool is_lambda(ASTNode *node) {
+  if (!AST_is_pair(node)) {
+    return false;
+  }
+  ASTNode *tag = AST_pair_car(node);
+  if (!AST_is_symbol(tag)) {
+    return false;
+  }
+  return AST_symbol_matches(tag, "lambda");
+}
+
+ASTNode *annotate_lambda(ASTNode *node) {
+  assert(is_lambda(node));
+  ASTNode *args = AST_pair_cdr(node);
+  ASTNode *params = operand1(args);
+  ASTNode *body = operand2(args);
   ASTNode *freevars = free_in_rec(body, params);
   return list4(AST_new_symbol("lambda"), params, freevars, body);
 }
@@ -3650,12 +3664,65 @@ TEST free_in_with_lambda() {
   PASS();
 }
 
+TEST is_lambda_with_freevars(ASTNode *node, word n, ...) {
+  if (!is_lambda(node)) {
+    FAILm("Not a lambda");
+  }
+  ASTNode *args = AST_pair_cdr(node);
+  ASTNode *freevars = operand2(args);
+  if (AST_is_nil(freevars) != (n == 0)) {
+    FAILm("Expected freevars to be nil only when n == 0");
+  }
+  if (!AST_is_pair(freevars)) {
+    FAILm("Freevars is not a list");
+  }
+  va_list vl;
+  va_start(vl, n);
+  for (word i = 0; i < n; i++) {
+    if (AST_is_nil(freevars)) {
+      FAILm("Freevars smaller than expected");
+    }
+    ASTNode *elt = AST_pair_car(freevars);
+    if (!AST_is_symbol(elt)) {
+      FAILm("Freevars had non-symbol element");
+    }
+    const char *expected = va_arg(vl, const char *);
+    if (!AST_symbol_matches(elt, expected)) {
+      FAILm("Freevars element does not match expected");
+    }
+    freevars = AST_pair_cdr(freevars);
+  }
+  if (!AST_is_nil(freevars)) {
+    abort();
+    FAILm("Freevars larger than expected");
+  }
+  PASS();
+}
+
+TEST annotate_lambda_adds_freevars() {
+  {
+    ASTNode *result = annotate_lambda(Reader_read("(lambda () a)"));
+    CHECK_CALL(is_lambda_with_freevars(result, 1, "a"));
+  }
+  {
+    ASTNode *result = annotate_lambda(Reader_read("(lambda () (+ a b))"));
+    CHECK_CALL(is_lambda_with_freevars(result, 2, "a", "b"));
+  }
+  {
+    ASTNode *result =
+        annotate_lambda(Reader_read("(lambda (y) (lambda () (+ x y)))"));
+    CHECK_CALL(is_lambda_with_freevars(result, 1, "x"));
+  }
+  PASS();
+}
+
 SUITE(transform_tests) {
   RUN_TEST(free_in_with_immediate_returns_nil);
   RUN_TEST(free_in_with_symbol_returns_list);
   RUN_TEST(free_in_with_if);
   RUN_TEST(free_in_with_let);
   RUN_TEST(free_in_with_lambda);
+  RUN_TEST(annotate_lambda_adds_freevars);
 }
 
 SUITE(compiler_tests) {
