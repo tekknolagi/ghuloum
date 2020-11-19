@@ -25,7 +25,7 @@ int main() {
   memcpy(memory, program, kProgramSize);
   int result = mprotect(memory, kProgramSize, PROT_EXEC);
   assert(result == 0 && "mprotect failed");
-  JitFunction function = *(JitFunction*)&memory;
+  JitFunction function = *(JitFunction *)&memory;
   int return_code = function();
   assert(return_code == 42 && "the assembly was wrong");
   result = munmap(memory, kProgramSize);

@@ -24,45 +24,63 @@
 typedef int64_t word;
 typedef uint64_t uword;
 
-const int kBitsPerByte = 8;                        // bits
-const int kWordSize = sizeof(word);                // bytes
-const int kBitsPerWord = kWordSize * kBitsPerByte; // bits
+// These constants are defined in a enum because the right hand side of a
+// statement like
+//     static const int kFoo = ...;
+// must be a so-called "Integer Constant Expression". Compilers are required to
+// support a certain set of these expressions, but are not required to support
+// arbitrary arithmetic with other integer constants. Compilers such as gcc
+// before gcc-8 just decided not to play this game, while gcc-8+ and Clang play
+// just fine.
+// Since this arithmetic with constant values works just fine for enums, make
+// all these constants enum values instead.
+// See https://twitter.com/tekknolagi/status/1328449329472835586 for more info.
+enum {
+  kBitsPerByte = 8,                        // bits
+  kWordSize = sizeof(word),                // bytes
+  kBitsPerWord = kWordSize * kBitsPerByte, // bits
 
-const unsigned int kIntegerTag = 0x0;     // 0b00
-const unsigned int kIntegerTagMask = 0x3; // 0b11
-const unsigned int kIntegerShift = 2;
-const unsigned int kIntegerBits = kBitsPerWord - kIntegerShift;
-const word kIntegerMax = (1LL << (kIntegerBits - 1)) - 1;
-const word kIntegerMin = -(1LL << (kIntegerBits - 1));
+  kIntegerTag = 0x0,     // 0b00
+  kIntegerTagMask = 0x3, // 0b11
+  kIntegerShift = 2,
+  kIntegerBits = kBitsPerWord - kIntegerShift,
 
-const unsigned int kImmediateTagMask = 0x3f;
+  kImmediateTagMask = 0x3f,
 
-const unsigned int kCharTag = 0xf;   // 0b00001111
-const unsigned int kCharMask = 0xff; // 0b11111111
-const unsigned int kCharShift = 8;
+  kCharTag = 0x0f,  // 0b00001111
+  kCharMask = 0xff, // 0b11111111
+  kCharShift = 8,
 
-const unsigned int kBoolTag = 0x1f;  // 0b0011111
-const unsigned int kBoolMask = 0x80; // 0b10000000
-const unsigned int kBoolShift = 7;
+  kBoolTag = 0x1f,  // 0b0011111
+  kBoolMask = 0x80, // 0b10000000
+  kBoolShift = 7,
 
-const unsigned int kNilTag = 0x2f; // 0b101111
+  kNilTag = 0x2f, // 0b101111
 
-const unsigned int kErrorTag = 0x3f; // 0b111111
+  kErrorTag = 0x3f, // 0b111111
 
-const unsigned int kPairTag = 0x1;        // 0b001
-const unsigned int kSymbolTag = 0x5;      // 0b101
-const uword kHeapTagMask = ((uword)0x7);  // 0b000...111
-const uword kHeapPtrMask = ~kHeapTagMask; // 0b1111...1000
+  kPairTag = 0x1,               // 0b001
+  kSymbolTag = 0x5,             // 0b101
+  kClosureTag = 0x6,            // 0b110
+  kHeapTagMask = ((uword)0x7),  // 0b000...111
+  kHeapPtrMask = ~kHeapTagMask, // 0b1111...1000
 
-const int kCarIndex = 0;
-const int kCarOffset = kCarIndex * kWordSize;
-const int kCdrIndex = kCarIndex + 1;
-const int kCdrOffset = kCdrIndex * kWordSize;
-const int kPairSize = kCdrOffset + kWordSize;
+  kCarIndex = 0,
+  kCarOffset = kCarIndex * kWordSize,
+  kCdrIndex = kCarIndex + 1,
+  kCdrOffset = kCdrIndex * kWordSize,
+  kPairSize = kCdrOffset + kWordSize,
+};
+
+// These are defined as macros because they will not work as static const int
+// constants (per above explanation), and enum constants are only required to
+// be an int wide (per ISO C).
+#define INTEGER_MAX ((1LL << (kIntegerBits - 1)) - 1)
+#define INTEGER_MIN (-(1LL << (kIntegerBits - 1)))
 
 uword Object_encode_integer(word value) {
-  assert(value < kIntegerMax && "too big");
-  assert(value > kIntegerMin && "too small");
+  assert(value < INTEGER_MAX && "too big");
+  assert(value > INTEGER_MIN && "too small");
   return value << kIntegerShift;
 }
 
