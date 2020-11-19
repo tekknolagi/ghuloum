@@ -326,7 +326,9 @@ Indirect Ind(Register reg, word disp) {
 // http://www.c-jump.com/CIS77/CPU/x86/lecture.html
 // https://wiki.osdev.org/X86-64_Instruction_Encoding
 
-const byte kRexPrefix = 0x48;
+enum {
+  kRexPrefix = 0x48,
+};
 
 typedef enum {
   Scale1 = 0,
