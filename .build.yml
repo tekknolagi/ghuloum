@@ -1,4 +1,17 @@
+# Minimal system to just run tests
 image: alpine/edge
+packages:
+- gcc
+tasks:
+- build: |
+   cd ghuloum
+   make
+- test: |
+   cd ghuloum
+   make test
+
+# For testing older compiler versions
+image: ubuntu/18.04
 packages:
 - gcc
 tasks:
