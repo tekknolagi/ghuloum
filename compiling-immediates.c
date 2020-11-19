@@ -177,7 +177,9 @@ typedef enum {
   kRdi,
 } Register;
 
-static const byte kRexPrefix = 0x48;
+enum {
+  kRexPrefix = 0x48,
+};
 
 void Emit_mov_reg_imm32(Buffer *buf, Register dst, int32_t src) {
   Buffer_write8(buf, kRexPrefix);
