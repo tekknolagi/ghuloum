@@ -45,6 +45,20 @@ def compile_expr(expr, code):
         case ["char->integer", e]:
             compile_expr(e, code)
             code.append(f"shr rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
+        case ["null?", e]:
+            compile_expr(e, code)
+            code.append(f"cmp rax, {EMPTY_LIST}")
+            code.append(f"mov rax, 0")
+            code.append(f"sete al")
+            code.append(f"shl rax, {BOOL_SHIFT}")
+            code.append(f"or rax, {BOOL_TAG}")
+        case ["zero?", e]:
+            compile_expr(e, code)
+            code.append(f"test rax, rax")
+            code.append(f"mov rax, 0")
+            code.append(f"sete al")
+            code.append(f"shl rax, {BOOL_SHIFT}")
+            code.append(f"or rax, {BOOL_TAG}")
         case _:
             raise NotImplementedError(expr)
 
@@ -95,6 +109,15 @@ class EndToEndTests(unittest.TestCase):
 
     def test_char_to_integer(self):
         self.assertEqual(self._run(["char->integer", Char("a")]), "97")
+
+    def test_nullp(self):
+        self.assertEqual(self._run(["null?", 123]), "#f")
+        self.assertEqual(self._run(["null?", []]), "#t")
+
+    def test_zerop(self):
+        self.assertEqual(self._run(["zero?", 123]), "#f")
+        self.assertEqual(self._run(["zero?", 0]), "#t")
+        self.assertEqual(self._run(["zero?", []]), "#f")
 
 if __name__ == "__main__":
     unittest.main()
