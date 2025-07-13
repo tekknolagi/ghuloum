@@ -38,6 +38,13 @@ def compile_expr(expr, code):
         case ["add1", e]:
             compile_expr(e, code)
             code.append(f"add rax, {immediate_rep(1)}")
+        case ["integer->char", e]:
+            compile_expr(e, code)
+            code.append(f"shl rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
+            code.append(f"or rax, {CHAR_TAG}")
+        case ["char->integer", e]:
+            compile_expr(e, code)
+            code.append(f"shr rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
         case _:
             raise NotImplementedError(expr)
 
@@ -53,7 +60,7 @@ def link(program, outfile=None, verbose=True):
     with tempfile.NamedTemporaryFile(suffix=".s") as f:
         f.write(program.encode("utf-8"))
         f.flush()
-        run(["clang", "-Os", "-masm=intel", f.name, "runtime.c", "-o", outfile], verbose=verbose)
+        run(["clang", "-O0", "-masm=intel", f.name, "runtime.c", "-o", outfile], verbose=verbose)
     return outfile
 
 class EndToEndTests(unittest.TestCase):
@@ -82,6 +89,12 @@ class EndToEndTests(unittest.TestCase):
     def test_add1(self):
         self.assertEqual(self._run(["add1", 3]), "4")
         self.assertEqual(self._run(["add1", ["add1", 3]]), "5")
+
+    def test_integer_to_char(self):
+        self.assertEqual(self._run(["integer->char", 97]), "'a'")
+
+    def test_char_to_integer(self):
+        self.assertEqual(self._run(["char->integer", Char("a")]), "97")
 
 if __name__ == "__main__":
     unittest.main()
