@@ -7,6 +7,7 @@ CHAR_TAG = 0b00001111
 CHAR_SHIFT = 8
 BOOL_TAG = 0b0011111
 BOOL_SHIFT = 7
+BOOL_BIT = 1 << BOOL_SHIFT
 EMPTY_LIST = 0b00101111
 
 def immediate_rep(val):
@@ -59,6 +60,9 @@ def compile_expr(expr, code):
             code.append(f"sete al")
             code.append(f"shl rax, {BOOL_SHIFT}")
             code.append(f"or rax, {BOOL_TAG}")
+        case ["not", e]:
+            compile_expr(e, code)
+            code.append(f"xor rax, {BOOL_BIT}")
         case _:
             raise NotImplementedError(expr)
 
@@ -118,6 +122,10 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run(["zero?", 123]), "#f")
         self.assertEqual(self._run(["zero?", 0]), "#t")
         self.assertEqual(self._run(["zero?", []]), "#f")
+
+    def test_not(self):
+        self.assertEqual(self._run(["not", True]), "#f")
+        self.assertEqual(self._run(["not", False]), "#t")
 
 if __name__ == "__main__":
     unittest.main()
