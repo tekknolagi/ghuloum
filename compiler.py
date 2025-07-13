@@ -15,6 +15,9 @@ def compile_expr(expr, code):
             code.append(f"mov rax, {box_fixnum(expr)}")
         case []:
             code.append(f"mov rax, {EMPTY_LIST}")
+        case ["add1", e]:
+            compile_expr(e, code)
+            code.append(f"add rax, {box_fixnum(1)}")
         case _:
             raise NotImplementedError(expr)
 
@@ -48,6 +51,10 @@ class EndToEndTests(unittest.TestCase):
 
     def test_empty_list(self):
         self.assertEqual(self._run([]), "()")
+
+    def test_add1(self):
+        self.assertEqual(self._run(["add1", 3]), "4")
+        self.assertEqual(self._run(["add1", ["add1", 3]]), "5")
 
 if __name__ == "__main__":
     unittest.main()
