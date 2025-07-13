@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from run import run
 
+WORD_SIZE=8
 FIXNUM_SHIFT = 2
 FIXNUM_MASK = 0b11
 FIXNUM_TAG = 0b00
@@ -33,42 +34,45 @@ class Char:
         assert len(b) == 1
         self.byte = b[0]
 
-def compile_expr(expr, code):
+def compile_expr(expr, code, si):
     emit = code.append
+    def stack_at(si):
+        assert si < 0
+        return f"[rsp{si}]"
     match expr:
         case int(_) | Char():
             emit(f"mov rax, {immediate_rep(expr)}")
         case []:
             emit(f"mov rax, {EMPTY_LIST}")
         case ["add1", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"add rax, {immediate_rep(1)}")
         case ["integer->char", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"shl rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
             emit(f"or rax, {CHAR_TAG}")
         case ["char->integer", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"shr rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
         case ["null?", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"cmp rax, {EMPTY_LIST}")
             emit(f"mov rax, 0")
             emit(f"sete al")
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
         case ["zero?", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"test rax, rax")
             emit(f"mov rax, 0")
             emit(f"sete al")
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
         case ["not", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"xor rax, {BOOL_BIT}")
         case ["integer?", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"and al, {FIXNUM_MASK}")
             emit(f"test al, al")
             emit(f"mov rax, 0")
@@ -76,19 +80,24 @@ def compile_expr(expr, code):
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
         case ["boolean?", e]:
-            compile_expr(e, code)
+            compile_expr(e, code, si)
             emit(f"and al, {BOOL_MASK}")
             emit(f"cmp al, {BOOL_TAG}")
             emit(f"mov rax, 0")
             emit(f"sete al")
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
+        case ["+", e0, e1]:
+            compile_expr(e0, code, si)
+            emit(f"mov {stack_at(si)}, rax")
+            compile_expr(e1, code, si-WORD_SIZE)
+            emit(f"add rax, {stack_at(si)}")
         case _:
             raise NotImplementedError(expr)
 
 def compile_program(expr):
     code = [".intel_syntax", ".global scheme_entry", "scheme_entry:"]
-    compile_expr(expr, code)
+    compile_expr(expr, code, si=-WORD_SIZE)
     code.append("ret")
     return "\n".join(code)
 
@@ -162,6 +171,10 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run(["boolean?", Char("a")]), "#f")
         self.assertEqual(self._run(["boolean?", True]), "#t")
         self.assertEqual(self._run(["boolean?", False]), "#t")
+
+    def test_add(self):
+        self.assertEqual(self._run(["+", 3, 4]), "7")
+        self.assertEqual(self._run(["+", ["+", 1, 2], ["+", 3, 4]]), "10")
 
 if __name__ == "__main__":
     unittest.main()
