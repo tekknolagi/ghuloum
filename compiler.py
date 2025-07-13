@@ -306,6 +306,15 @@ class EndToEndTests(unittest.TestCase):
                 ["labelcall", "add", 3, 4],
             ]), "7")
 
+    def test_labelcall_with_tmp_on_stack(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["add", ["code", ["a", "b"], ["+", "a", "b"]]]
+                ],
+                ["+", 2, ["labelcall", "add", 3, 4]],
+            ]), "9")
+
     def test_nested_labelcall_with_args(self):
         self.assertEqual(self._run_program(
             ["labels",
