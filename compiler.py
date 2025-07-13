@@ -3,21 +3,41 @@ import unittest
 from run import run
 
 FIXNUM_SHIFT = 2
+CHAR_TAG = 0b00001111
+CHAR_SHIFT = 8
+BOOL_TAG = 0b0011111
+BOOL_SHIFT = 7
 EMPTY_LIST = 0b00101111
 
-def box_fixnum(val):
+def immediate_rep(val):
     assert isinstance(val, int)
-    return val << FIXNUM_SHIFT
+
+def immediate_rep(val):
+    match val:
+        case bool(_):
+            return (val << BOOL_SHIFT) | BOOL_TAG
+        case int(_):
+            return val << FIXNUM_SHIFT
+        case Char():
+            return (val.byte << CHAR_SHIFT) | CHAR_TAG
+        case _:
+            raise NotImplementedError(val)
+
+class Char:
+    def __init__(self, c):
+        b = c.encode("utf-8")
+        assert len(b) == 1
+        self.byte = b[0]
 
 def compile_expr(expr, code):
     match expr:
-        case int(_):
-            code.append(f"mov rax, {box_fixnum(expr)}")
+        case int(_) | Char():
+            code.append(f"mov rax, {immediate_rep(expr)}")
         case []:
             code.append(f"mov rax, {EMPTY_LIST}")
         case ["add1", e]:
             compile_expr(e, code)
-            code.append(f"add rax, {box_fixnum(1)}")
+            code.append(f"add rax, {immediate_rep(1)}")
         case _:
             raise NotImplementedError(expr)
 
@@ -48,6 +68,13 @@ class EndToEndTests(unittest.TestCase):
 
     def test_int(self):
         self.assertEqual(self._run(123), "123")
+
+    def test_char(self):
+        self.assertEqual(self._run(Char("a")), "'a'")
+
+    def test_bool(self):
+        self.assertEqual(self._run(True), "#t")
+        self.assertEqual(self._run(False), "#f")
 
     def test_empty_list(self):
         self.assertEqual(self._run([]), "()")
