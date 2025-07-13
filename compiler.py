@@ -34,7 +34,7 @@ class Char:
         assert len(b) == 1
         self.byte = b[0]
 
-def compile_expr(expr, code, si):
+def compile_expr(expr, code, si, env):
     emit = code.append
     def stack_at(si):
         assert si < 0
@@ -42,37 +42,40 @@ def compile_expr(expr, code, si):
     match expr:
         case int(_) | Char():
             emit(f"mov rax, {immediate_rep(expr)}")
+        case str(_):
+            var_si = env[expr]
+            emit(f"mov rax, {stack_at(var_si)}")
         case []:
             emit(f"mov rax, {EMPTY_LIST}")
         case ["add1", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"add rax, {immediate_rep(1)}")
         case ["integer->char", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"shl rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
             emit(f"or rax, {CHAR_TAG}")
         case ["char->integer", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"shr rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
         case ["null?", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"cmp rax, {EMPTY_LIST}")
             emit(f"mov rax, 0")
             emit(f"sete al")
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
         case ["zero?", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"test rax, rax")
             emit(f"mov rax, 0")
             emit(f"sete al")
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
         case ["not", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"xor rax, {BOOL_BIT}")
         case ["integer?", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"and al, {FIXNUM_MASK}")
             emit(f"test al, al")
             emit(f"mov rax, 0")
@@ -80,7 +83,7 @@ def compile_expr(expr, code, si):
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
         case ["boolean?", e]:
-            compile_expr(e, code, si)
+            compile_expr(e, code, si, env)
             emit(f"and al, {BOOL_MASK}")
             emit(f"cmp al, {BOOL_TAG}")
             emit(f"mov rax, 0")
@@ -88,16 +91,26 @@ def compile_expr(expr, code, si):
             emit(f"shl rax, {BOOL_SHIFT}")
             emit(f"or rax, {BOOL_TAG}")
         case ["+", e0, e1]:
-            compile_expr(e0, code, si)
+            compile_expr(e0, code, si, env)
             emit(f"mov {stack_at(si)}, rax")
-            compile_expr(e1, code, si-WORD_SIZE)
+            compile_expr(e1, code, si-WORD_SIZE, env)
             emit(f"add rax, {stack_at(si)}")
+        case ["let", bindings, body]:
+            new_env = env.copy()
+            new_si = si
+            while bindings:
+                (name, val) = bindings.pop(0)
+                compile_expr(val, code, new_si, env)
+                emit(f"mov {stack_at(new_si)}, rax")
+                new_env[name] = new_si
+                new_si -= WORD_SIZE
+            compile_expr(body, code, new_si, new_env)
         case _:
             raise NotImplementedError(expr)
 
 def compile_program(expr):
     code = [".intel_syntax", ".global scheme_entry", "scheme_entry:"]
-    compile_expr(expr, code, si=-WORD_SIZE)
+    compile_expr(expr, code, si=-WORD_SIZE, env={})
     code.append("ret")
     return "\n".join(code)
 
@@ -175,6 +188,15 @@ class EndToEndTests(unittest.TestCase):
     def test_add(self):
         self.assertEqual(self._run(["+", 3, 4]), "7")
         self.assertEqual(self._run(["+", ["+", 1, 2], ["+", 3, 4]]), "10")
+
+    def test_let_no_bindings(self):
+        self.assertEqual(self._run(["let", [], 3]), "3")
+
+    def test_let_one_binding(self):
+        self.assertEqual(self._run(["let", [["a", 3]], "a"]), "3")
+
+    def test_let_multiple_bindings(self):
+        self.assertEqual(self._run(["let", [["a", 3], ["b", 4]], ["+", "a", "b"]]), "7")
 
 if __name__ == "__main__":
     unittest.main()
