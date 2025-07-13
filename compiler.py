@@ -18,9 +18,6 @@ CLOSURE_TAG = 0b110
 HEAP_ALIGNMENT = 2 * WORD_SIZE
 
 def immediate_rep(val):
-    assert isinstance(val, int)
-
-def immediate_rep(val):
     match val:
         case bool(_):
             return (val << BOOL_SHIFT) | BOOL_TAG
