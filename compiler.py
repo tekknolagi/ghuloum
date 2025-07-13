@@ -3,6 +3,7 @@ import unittest
 from run import run
 
 FIXNUM_SHIFT = 2
+EMPTY_LIST = 0b00101111
 
 def box_fixnum(val):
     assert isinstance(val, int)
@@ -12,6 +13,8 @@ def compile_expr(expr, code):
     match expr:
         case int(_):
             code.append(f"mov rax, {box_fixnum(expr)}")
+        case []:
+            code.append(f"mov rax, {EMPTY_LIST}")
         case _:
             raise NotImplementedError(expr)
 
@@ -42,6 +45,9 @@ class EndToEndTests(unittest.TestCase):
 
     def test_int(self):
         self.assertEqual(self._run(123), "123")
+
+    def test_empty_list(self):
+        self.assertEqual(self._run([]), "()")
 
 if __name__ == "__main__":
     unittest.main()
