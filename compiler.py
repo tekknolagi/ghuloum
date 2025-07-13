@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from run import run
 
-WORD_SIZE=8
+WORD_SIZE = 8
 FIXNUM_SHIFT = 2
 FIXNUM_MASK = 0b11
 FIXNUM_TAG = 0b00
@@ -15,7 +15,7 @@ BOOL_BIT = 1 << BOOL_SHIFT
 EMPTY_LIST = 0b00101111
 CONS_TAG = 0b001
 CLOSURE_TAG = 0b110
-HEAP_ALIGNMENT=2*WORD_SIZE
+HEAP_ALIGNMENT = 2 * WORD_SIZE
 
 def immediate_rep(val):
     assert isinstance(val, int)
@@ -156,7 +156,7 @@ def compile_expr(expr, code, si, env):
             compile_expr(cell, code, si, env)
             emit(f"mov rax, {indirect('rax', 1*WORD_SIZE-CONS_TAG)}")
         case ["labelcall", label, *args]:
-            new_si = si-WORD_SIZE  # Save a word for the return address
+            new_si = si - WORD_SIZE  # Save a word for the return address
             for arg in args:
                 compile_expr(arg, code, new_si, env)
                 emit(f"mov {stack_at(new_si)}, rax")
