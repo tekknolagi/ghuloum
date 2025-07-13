@@ -152,7 +152,7 @@ def compile_expr(expr, code, si, env):
         case ["cdr", cell]:
             compile_expr(cell, code, si, env)
             emit(f"mov rax, {indirect('rax', 1*WORD_SIZE-CONS_TAG)}")
-        case ["labelcall", label, *args]:
+        case ["labelcall", str(label), *args]:
             new_si = si - WORD_SIZE  # Save a word for the return address
             for arg in args:
                 compile_expr(arg, code, new_si, env)
