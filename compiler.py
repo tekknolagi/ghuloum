@@ -34,11 +34,17 @@ class Char:
         assert len(b) == 1
         self.byte = b[0]
 
+NEXT_LABEL = -1
+
 def compile_expr(expr, code, si, env):
     emit = code.append
     def stack_at(si):
         assert si < 0
         return f"[rsp{si}]"
+    def unique_label():
+        global NEXT_LABEL
+        NEXT_LABEL += 1
+        return f"L{NEXT_LABEL}"
     match expr:
         case int(_) | Char():
             emit(f"mov rax, {immediate_rep(expr)}")
@@ -105,6 +111,17 @@ def compile_expr(expr, code, si, env):
                 new_env[name] = new_si
                 new_si -= WORD_SIZE
             compile_expr(body, code, new_si, new_env)
+        case ["if", test, conseq, altern]:
+            L0 = unique_label()
+            L1 = unique_label()
+            compile_expr(test, code, si, env)
+            emit(f"cmp rax, {immediate_rep(False)}")
+            emit(f"je {L0}")
+            compile_expr(conseq, code, si, env)
+            emit(f"jmp {L1}")
+            emit(f"{L0}:")
+            compile_expr(altern, code, si, env)
+            emit(f"{L1}:")
         case _:
             raise NotImplementedError(expr)
 
@@ -200,6 +217,10 @@ class EndToEndTests(unittest.TestCase):
 
     def test_let_multiple_bindings(self):
         self.assertEqual(self._run(["let", [["a", 3], ["b", 4]], ["+", "a", "b"]]), "7")
+
+    def test_if(self):
+        self.assertEqual(self._run(["if", True, 3, 4]), "3")
+        self.assertEqual(self._run(["if", False, 3, 4]), "4")
 
 if __name__ == "__main__":
     unittest.main()
