@@ -14,6 +14,7 @@ BOOL_MASK = 0b1111111
 BOOL_BIT = 1 << BOOL_SHIFT
 EMPTY_LIST = 0b00101111
 CONS_TAG = 0b001
+HEAP_ALIGNMENT=2*WORD_SIZE
 
 def immediate_rep(val):
     assert isinstance(val, int)
@@ -57,6 +58,10 @@ def compile_expr(expr, code, si, env):
         global NEXT_LABEL
         NEXT_LABEL += 1
         return f"L{NEXT_LABEL}"
+    def align(size):
+        if size % HEAP_ALIGNMENT == 0:
+            return size
+        return size + WORD_SIZE
     match expr:
         case int(_) | Char():
             emit(f"mov rax, {immediate_rep(expr)}")
@@ -141,7 +146,8 @@ def compile_expr(expr, code, si, env):
             emit(f"mov rax, {stack_at(si)}")
             emit(f"mov {heap_at(0)}, rax")
             emit(f"lea rax, {heap_at(CONS_TAG)}")  # Tag the pointer
-            emit(f"add {HEAP_BASE}, {2*WORD_SIZE}")  # Bump the heap
+            size = align(2 * WORD_SIZE)
+            emit(f"add {HEAP_BASE}, {size}")  # Bump the heap
         case ["car", cell]:
             compile_expr(cell, code, si, env)
             emit(f"mov rax, {indirect('rax', 0*WORD_SIZE-CONS_TAG)}")
