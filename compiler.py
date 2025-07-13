@@ -3,10 +3,13 @@ import unittest
 from run import run
 
 FIXNUM_SHIFT = 2
+FIXNUM_MASK = 0b11
+FIXNUM_TAG = 0b00
 CHAR_TAG = 0b00001111
 CHAR_SHIFT = 8
 BOOL_TAG = 0b0011111
 BOOL_SHIFT = 7
+BOOL_MASK = 0b1111111
 BOOL_BIT = 1 << BOOL_SHIFT
 EMPTY_LIST = 0b00101111
 
@@ -63,6 +66,22 @@ def compile_expr(expr, code):
         case ["not", e]:
             compile_expr(e, code)
             code.append(f"xor rax, {BOOL_BIT}")
+        case ["integer?", e]:
+            compile_expr(e, code)
+            code.append(f"and al, {FIXNUM_MASK}")
+            code.append(f"test al, al")
+            code.append(f"mov rax, 0")
+            code.append(f"sete al")
+            code.append(f"shl rax, {BOOL_SHIFT}")
+            code.append(f"or rax, {BOOL_TAG}")
+        case ["boolean?", e]:
+            compile_expr(e, code)
+            code.append(f"and al, {BOOL_MASK}")
+            code.append(f"cmp al, {BOOL_TAG}")
+            code.append(f"mov rax, 0")
+            code.append(f"sete al")
+            code.append(f"shl rax, {BOOL_SHIFT}")
+            code.append(f"or rax, {BOOL_TAG}")
         case _:
             raise NotImplementedError(expr)
 
@@ -126,6 +145,22 @@ class EndToEndTests(unittest.TestCase):
     def test_not(self):
         self.assertEqual(self._run(["not", True]), "#f")
         self.assertEqual(self._run(["not", False]), "#t")
+
+    def test_integerp(self):
+        self.assertEqual(self._run(["integer?", 123]), "#t")
+        self.assertEqual(self._run(["integer?", 0]), "#t")
+        self.assertEqual(self._run(["integer?", []]), "#f")
+        self.assertEqual(self._run(["integer?", Char("a")]), "#f")
+        self.assertEqual(self._run(["integer?", True]), "#f")
+        self.assertEqual(self._run(["integer?", False]), "#f")
+
+    def test_booleanp(self):
+        self.assertEqual(self._run(["boolean?", 123]), "#f")
+        self.assertEqual(self._run(["boolean?", 0]), "#f")
+        self.assertEqual(self._run(["boolean?", []]), "#f")
+        self.assertEqual(self._run(["boolean?", Char("a")]), "#f")
+        self.assertEqual(self._run(["boolean?", True]), "#t")
+        self.assertEqual(self._run(["boolean?", False]), "#t")
 
 if __name__ == "__main__":
     unittest.main()
