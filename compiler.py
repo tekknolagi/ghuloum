@@ -14,6 +14,7 @@ BOOL_MASK = 0b1111111
 BOOL_BIT = 1 << BOOL_SHIFT
 EMPTY_LIST = 0b00101111
 CONS_TAG = 0b001
+CLOSURE_TAG = 0b110
 HEAP_ALIGNMENT=2*WORD_SIZE
 
 def immediate_rep(val):
@@ -164,6 +165,17 @@ def compile_expr(expr, code, si, env):
             emit(f"sub rsp, {si_adjust}")
             emit(f"call {label}")
             emit(f"add rsp, {si_adjust}")
+        case ["closure", str(lvar), *args]:
+            emit(f"movabs rax, {lvar}")
+            emit(f"mov {heap_at(0)}, rax")
+            for idx, arg in enumerate(args):
+                assert isinstance(arg, str)
+                # Just a variable lookup; guaranteed not to allocate
+                compile_expr(arg, code, si, env)
+                emit(f"mov {heap_at((idx+1)*WORD_SIZE)}, rax")
+            emit(f"lea rax, {heap_at(CLOSURE_TAG)}")  # Tag the pointer
+            size = align(WORD_SIZE + len(args)*WORD_SIZE)
+            emit(f"add {HEAP_BASE}, {size}")  # Bump the heap
         case _:
             raise NotImplementedError(expr)
 
@@ -199,7 +211,7 @@ def link(program, outfile=None, verbose=True):
         run(["ccache", "clang", "-O0", "-ggdb", "-c", "runtime.c"], verbose=verbose)
         compiled_object = f"{f.name}.o"
         run(["ccache", "clang", "-O0", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
-        run(["ccache", "clang", "-O0", "-masm=intel", compiled_object, "runtime.o", "-o", outfile], verbose=verbose)
+        run(["ccache", "clang", "-O0", "-masm=intel", "-no-pie", compiled_object, "runtime.o", "-o", outfile], verbose=verbose)
     return outfile
 
 class EndToEndTests(unittest.TestCase):
@@ -336,6 +348,37 @@ class EndToEndTests(unittest.TestCase):
                 ],
                 ["labelcall", "f", 3],
             ]), "14")
+
+    def test_empty_closure(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], 3]],
+                ],
+                ["closure", "const"],
+            ]), "<closure>")
+
+    def test_closure_one_var(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], 3]],
+                ],
+                ["let", [["a", 1]],
+                    ["closure", "const", "a"],
+                ]
+            ]), "<closure>")
+
+    def test_closure_multiple_vars(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], 3]],
+                ],
+                ["let", [["a", 1]],
+                    ["closure", "const", "a", "a", "a"],
+                ]
+            ]), "<closure>")
 
 
 if __name__ == "__main__":

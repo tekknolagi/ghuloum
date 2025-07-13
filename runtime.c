@@ -58,6 +58,10 @@ Object cdr(Object obj) {
   return unbox_heap(obj)[1];
 }
 
+bool is_closure(Object obj) {
+  return (obj & heap_mask) == closure_tag;
+}
+
 bool is_empty_list(Object obj) {
   return obj == empty_list;
 }
@@ -80,6 +84,8 @@ void print_obj(Object obj) {
     fprintf(fp, " . ");
     print_obj(cdr(obj));
     fprintf(fp, ")");
+  } else if (is_closure(obj)) {
+    fprintf(fp, "<closure>");
   } else {
     fprintf(fp, "<unknown %p>", (void*)obj);
   }
