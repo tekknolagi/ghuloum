@@ -148,13 +148,36 @@ def compile_expr(expr, code, si, env):
         case ["cdr", cell]:
             compile_expr(cell, code, si, env)
             emit(f"mov rax, {indirect('rax', 1*WORD_SIZE-CONS_TAG)}")
+        case ["labelcall", label, *args]:
+            new_si = si-WORD_SIZE  # Save a word for the return address
+            for arg in args:
+                compile_expr(arg, code, new_si, env)
+                emit(f"mov {stack_at(new_si)}, rax")
+                new_si -= WORD_SIZE
+            si_adjust = abs(si+WORD_SIZE)
+            emit(f"sub rsp, {si_adjust}")
+            emit(f"call {label}")
+            emit(f"add rsp, {si_adjust}")
         case _:
             raise NotImplementedError(expr)
 
+def compile_lexpr(lexpr, code):
+    match lexpr:
+        case ["code", vars, body]:
+            env = {var: -(idx+1)*WORD_SIZE for idx, var in enumerate(vars)}
+            compile_expr(body, code, si=-(len(env)+1)*WORD_SIZE, env=env)
+            code.append("ret")
+        case _:
+            raise NotImplementedError(lexpr)
+
 def compile_program(expr):
-    code = [".intel_syntax", ".global scheme_entry", "scheme_entry:"]
+    code = [".intel_syntax", ".global scheme_entry"]
     match expr:
-        case ["labels", [], body]:
+        case ["labels", labels, body]:
+            for (lvar, lexpr) in labels:
+                code.append(f"{lvar}:")
+                compile_lexpr(lexpr, code)
+            code.append("scheme_entry:")
             compile_expr(body, code, si=-WORD_SIZE, env={})
             code.append("ret")
         case _:
@@ -174,8 +197,11 @@ def link(program, outfile=None, verbose=True):
     return outfile
 
 class EndToEndTests(unittest.TestCase):
-    def _run(self, program):
-        asm = compile_program(["labels", [], program])
+    def _run(self, expr):
+        return self._run_program(["labels", [], expr])
+
+    def _run_program(self, program):
+        asm = compile_program(program)
         with tempfile.NamedTemporaryFile(suffix=".out", delete_on_close=False) as f:
             link(asm, f.name, verbose=False)
             f.close()
@@ -261,6 +287,41 @@ class EndToEndTests(unittest.TestCase):
 
     def test_cdr(self):
         self.assertEqual(self._run(["cdr", ["cons", 3, 4]]), "4")
+
+    def test_labelcall_no_args(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], 3]]
+                ],
+                ["labelcall", "const"],
+            ]), "3")
+
+    def test_labelcall_with_args(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["add", ["code", ["a", "b"], ["+", "a", "b"]]]
+                ],
+                ["labelcall", "add", 3, 4],
+            ]), "7")
+
+    def test_nested_labelcall_with_args(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["add", ["code", ["a", "b"], ["+", "a", "b"]]],
+                    ["g", ["code", ["a", "b"],
+                           ["+",
+                              ["labelcall", "add", "a", "b"],
+                              ["labelcall", "add", "a", "b"],
+                             ],
+                           ]],
+                    ["f", ["code", ["a"], ["labelcall", "g", "a", 4]]],
+                ],
+                ["labelcall", "f", 3],
+            ]), "14")
+
 
 if __name__ == "__main__":
     unittest.main()
