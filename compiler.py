@@ -116,8 +116,7 @@ def compile_expr(expr, code, si, env):
         case ["let", bindings, body]:
             new_env = env.copy()
             new_si = si
-            while bindings:
-                (name, val) = bindings.pop(0)
+            for (name, val) in bindings:
                 compile_expr(val, code, new_si, env)
                 emit(f"mov {stack_at(new_si)}, rax")
                 new_env[name] = new_si
