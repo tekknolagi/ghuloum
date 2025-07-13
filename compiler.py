@@ -37,17 +37,22 @@ class Char:
 
 NEXT_LABEL = -1
 
+# Note: different from Ghuloum's choice of esi/rsi because we're going
+# to take the heap pointer in the first scheme entry parameter
+HEAP_BASE = "rdi"
+
 def compile_expr(expr, code, si, env):
     emit = code.append
+    def indirect(reg, offset):
+        if offset >= 0:
+            return f"[{reg}+{offset}]"
+        else:
+            return f"[{reg}{offset}]"
     def stack_at(si):
         assert si < 0
-        return f"[rsp{si}]"
+        return indirect("rsp", si)
     def heap_at(offset):
-        assert offset >= 0
-        # Note: different from Ghuloum's choice of esi/rsi because we're going
-        # to take the heap pointer in the first scheme entry parameter
-        HEAP_BASE = "rdi"
-        return f"[{HEAP_BASE}+{offset}]"
+        return indirect(HEAP_BASE, offset)
     def unique_label():
         global NEXT_LABEL
         NEXT_LABEL += 1
@@ -138,6 +143,12 @@ def compile_expr(expr, code, si, env):
             emit(f"mov {heap_at(0)}, rax")
             emit(f"lea rax, {heap_at(CONS_TAG)}")  # Tag the pointer
             emit(f"add {HEAP_BASE}, {2*WORD_SIZE}")  # Bump the heap
+        case ["car", cell]:
+            compile_expr(cell, code, si, env)
+            emit(f"mov rax, {indirect('rax', 0*WORD_SIZE-CONS_TAG)}")
+        case ["cdr", cell]:
+            compile_expr(cell, code, si, env)
+            emit(f"mov rax, {indirect('rax', 1*WORD_SIZE-CONS_TAG)}")
         case _:
             raise NotImplementedError(expr)
 
@@ -241,6 +252,12 @@ class EndToEndTests(unittest.TestCase):
     def test_cons(self):
         self.assertEqual(self._run(["cons", 3, 4]), "(3 . 4)")
         self.assertEqual(self._run(["cons", ["cons", 1, 2], ["cons", 3, 4]]), "((1 . 2) . (3 . 4))")
+
+    def test_car(self):
+        self.assertEqual(self._run(["car", ["cons", 3, 4]]), "3")
+
+    def test_cdr(self):
+        self.assertEqual(self._run(["cdr", ["cons", 3, 4]]), "4")
 
 if __name__ == "__main__":
     unittest.main()
