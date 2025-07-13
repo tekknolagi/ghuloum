@@ -34,54 +34,55 @@ class Char:
         self.byte = b[0]
 
 def compile_expr(expr, code):
+    emit = code.append
     match expr:
         case int(_) | Char():
-            code.append(f"mov rax, {immediate_rep(expr)}")
+            emit(f"mov rax, {immediate_rep(expr)}")
         case []:
-            code.append(f"mov rax, {EMPTY_LIST}")
+            emit(f"mov rax, {EMPTY_LIST}")
         case ["add1", e]:
             compile_expr(e, code)
-            code.append(f"add rax, {immediate_rep(1)}")
+            emit(f"add rax, {immediate_rep(1)}")
         case ["integer->char", e]:
             compile_expr(e, code)
-            code.append(f"shl rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
-            code.append(f"or rax, {CHAR_TAG}")
+            emit(f"shl rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
+            emit(f"or rax, {CHAR_TAG}")
         case ["char->integer", e]:
             compile_expr(e, code)
-            code.append(f"shr rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
+            emit(f"shr rax, {CHAR_SHIFT-FIXNUM_SHIFT}")
         case ["null?", e]:
             compile_expr(e, code)
-            code.append(f"cmp rax, {EMPTY_LIST}")
-            code.append(f"mov rax, 0")
-            code.append(f"sete al")
-            code.append(f"shl rax, {BOOL_SHIFT}")
-            code.append(f"or rax, {BOOL_TAG}")
+            emit(f"cmp rax, {EMPTY_LIST}")
+            emit(f"mov rax, 0")
+            emit(f"sete al")
+            emit(f"shl rax, {BOOL_SHIFT}")
+            emit(f"or rax, {BOOL_TAG}")
         case ["zero?", e]:
             compile_expr(e, code)
-            code.append(f"test rax, rax")
-            code.append(f"mov rax, 0")
-            code.append(f"sete al")
-            code.append(f"shl rax, {BOOL_SHIFT}")
-            code.append(f"or rax, {BOOL_TAG}")
+            emit(f"test rax, rax")
+            emit(f"mov rax, 0")
+            emit(f"sete al")
+            emit(f"shl rax, {BOOL_SHIFT}")
+            emit(f"or rax, {BOOL_TAG}")
         case ["not", e]:
             compile_expr(e, code)
-            code.append(f"xor rax, {BOOL_BIT}")
+            emit(f"xor rax, {BOOL_BIT}")
         case ["integer?", e]:
             compile_expr(e, code)
-            code.append(f"and al, {FIXNUM_MASK}")
-            code.append(f"test al, al")
-            code.append(f"mov rax, 0")
-            code.append(f"sete al")
-            code.append(f"shl rax, {BOOL_SHIFT}")
-            code.append(f"or rax, {BOOL_TAG}")
+            emit(f"and al, {FIXNUM_MASK}")
+            emit(f"test al, al")
+            emit(f"mov rax, 0")
+            emit(f"sete al")
+            emit(f"shl rax, {BOOL_SHIFT}")
+            emit(f"or rax, {BOOL_TAG}")
         case ["boolean?", e]:
             compile_expr(e, code)
-            code.append(f"and al, {BOOL_MASK}")
-            code.append(f"cmp al, {BOOL_TAG}")
-            code.append(f"mov rax, 0")
-            code.append(f"sete al")
-            code.append(f"shl rax, {BOOL_SHIFT}")
-            code.append(f"or rax, {BOOL_TAG}")
+            emit(f"and al, {BOOL_MASK}")
+            emit(f"cmp al, {BOOL_TAG}")
+            emit(f"mov rax, 0")
+            emit(f"sete al")
+            emit(f"shl rax, {BOOL_SHIFT}")
+            emit(f"or rax, {BOOL_TAG}")
         case _:
             raise NotImplementedError(expr)
 
