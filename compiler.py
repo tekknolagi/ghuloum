@@ -154,8 +154,12 @@ def compile_expr(expr, code, si, env):
 
 def compile_program(expr):
     code = [".intel_syntax", ".global scheme_entry", "scheme_entry:"]
-    compile_expr(expr, code, si=-WORD_SIZE, env={})
-    code.append("ret")
+    match expr:
+        case ["labels", [], body]:
+            compile_expr(body, code, si=-WORD_SIZE, env={})
+            code.append("ret")
+        case _:
+            raise NotImplementedError(expr)
     return "\n".join(code)
 
 def link(program, outfile=None, verbose=True):
@@ -172,7 +176,7 @@ def link(program, outfile=None, verbose=True):
 
 class EndToEndTests(unittest.TestCase):
     def _run(self, program):
-        asm = compile_program(program)
+        asm = compile_program(["labels", [], program])
         with tempfile.NamedTemporaryFile(suffix=".out", delete_on_close=False) as f:
             link(asm, f.name, verbose=False)
             f.close()
