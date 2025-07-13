@@ -181,8 +181,8 @@ def compile_expr(expr, code, si, env):
 
 def compile_lexpr(lexpr, code):
     match lexpr:
-        case ["code", vars, body]:
-            env = {var: -(idx+1)*WORD_SIZE for idx, var in enumerate(vars)}
+        case ["code", params, freevars, body]:
+            env = {param: -(idx+1)*WORD_SIZE for idx, param in enumerate(params)}
             compile_expr(body, code, si=-(len(env)+1)*WORD_SIZE, env=env)
             code.append("ret")
         case _:
@@ -310,7 +310,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run_program(
             ["labels",
                 [
-                    ["const", ["code", [], 3]]
+                    ["const", ["code", [], [], 3]]
                 ],
                 ["labelcall", "const"],
             ]), "3")
@@ -319,7 +319,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run_program(
             ["labels",
                 [
-                    ["add", ["code", ["a", "b"], ["+", "a", "b"]]]
+                    ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]]
                 ],
                 ["labelcall", "add", 3, 4],
             ]), "7")
@@ -328,7 +328,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run_program(
             ["labels",
                 [
-                    ["add", ["code", ["a", "b"], ["+", "a", "b"]]]
+                    ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]]
                 ],
                 ["+", 2, ["labelcall", "add", 3, 4]],
             ]), "9")
@@ -337,14 +337,14 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run_program(
             ["labels",
                 [
-                    ["add", ["code", ["a", "b"], ["+", "a", "b"]]],
-                    ["g", ["code", ["a", "b"],
+                    ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]],
+                    ["g", ["code", ["a", "b"], [],
                            ["+",
                               ["labelcall", "add", "a", "b"],
                               ["labelcall", "add", "a", "b"],
                              ],
                            ]],
-                    ["f", ["code", ["a"], ["labelcall", "g", "a", 4]]],
+                    ["f", ["code", ["a"], [], ["labelcall", "g", "a", 4]]],
                 ],
                 ["labelcall", "f", 3],
             ]), "14")
@@ -353,7 +353,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run_program(
             ["labels",
                 [
-                    ["const", ["code", [], 3]],
+                    ["const", ["code", [], [], 3]],
                 ],
                 ["closure", "const"],
             ]), "<closure>")
@@ -362,7 +362,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run_program(
             ["labels",
                 [
-                    ["const", ["code", [], 3]],
+                    ["const", ["code", [], [], 3]],
                 ],
                 ["let", [["a", 1]],
                     ["closure", "const", "a"],
@@ -373,7 +373,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self._run_program(
             ["labels",
                 [
-                    ["const", ["code", [], 3]],
+                    ["const", ["code", [], [], 3]],
                 ],
                 ["let", [["a", 1]],
                     ["closure", "const", "a", "a", "a"],
