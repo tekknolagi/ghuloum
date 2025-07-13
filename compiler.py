@@ -13,6 +13,7 @@ BOOL_SHIFT = 7
 BOOL_MASK = 0b1111111
 BOOL_BIT = 1 << BOOL_SHIFT
 EMPTY_LIST = 0b00101111
+CONS_TAG = 0b001
 
 def immediate_rep(val):
     assert isinstance(val, int)
@@ -41,6 +42,12 @@ def compile_expr(expr, code, si, env):
     def stack_at(si):
         assert si < 0
         return f"[rsp{si}]"
+    def heap_at(offset):
+        assert offset >= 0
+        # Note: different from Ghuloum's choice of esi/rsi because we're going
+        # to take the heap pointer in the first scheme entry parameter
+        HEAP_BASE = "rdi"
+        return f"[{HEAP_BASE}+{offset}]"
     def unique_label():
         global NEXT_LABEL
         NEXT_LABEL += 1
@@ -122,6 +129,15 @@ def compile_expr(expr, code, si, env):
             emit(f"{L0}:")
             compile_expr(altern, code, si, env)
             emit(f"{L1}:")
+        case ["cons", car, cdr]:
+            compile_expr(car, code, si, env)
+            emit(f"mov {stack_at(si)}, rax")
+            compile_expr(cdr, code, si-WORD_SIZE, env)
+            emit(f"mov {heap_at(WORD_SIZE)}, rax")
+            emit(f"mov rax, {stack_at(si)}")
+            emit(f"mov {heap_at(0)}, rax")
+            emit(f"lea rax, {heap_at(CONS_TAG)}")  # Tag the pointer
+            emit(f"add {HEAP_BASE}, {2*WORD_SIZE}")  # Bump the heap
         case _:
             raise NotImplementedError(expr)
 
@@ -221,6 +237,10 @@ class EndToEndTests(unittest.TestCase):
     def test_if(self):
         self.assertEqual(self._run(["if", True, 3, 4]), "3")
         self.assertEqual(self._run(["if", False, 3, 4]), "4")
+
+    def test_cons(self):
+        self.assertEqual(self._run(["cons", 3, 4]), "(3 . 4)")
+        self.assertEqual(self._run(["cons", ["cons", 1, 2], ["cons", 3, 4]]), "((1 . 2) . (3 . 4))")
 
 if __name__ == "__main__":
     unittest.main()

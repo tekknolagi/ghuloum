@@ -5,7 +5,7 @@
 
 typedef uint64_t Object;
 
-extern Object scheme_entry(void);
+extern Object scheme_entry(Object *heap);
 
 #define fixnum_mask 3
 #define fixnum_tag 0
@@ -15,6 +15,12 @@ extern Object scheme_entry(void);
 #define obj_false 0x1f
 #define obj_true 0x9f
 #define empty_list 0x2f
+#define heap_mask 7
+#define cons_tag 0x1
+#define vector_tag 0x2
+#define string_tag 0x3
+#define symbol_tag 0x5
+#define closure_tag 0x6
 
 bool is_fixnum(Object obj) {
   return (obj & fixnum_mask) == fixnum_tag;
@@ -34,6 +40,24 @@ char unbox_char(Object obj) {
   return obj >> char_shift;
 }
 
+bool is_cons(Object obj) {
+  return (obj & heap_mask) == cons_tag;
+}
+
+Object* unbox_heap(Object obj) {
+  return (Object*)(obj & ~heap_mask);
+}
+
+Object car(Object obj) {
+  assert(is_cons(obj));
+  return unbox_heap(obj)[0];
+}
+
+Object cdr(Object obj) {
+  assert(is_cons(obj));
+  return unbox_heap(obj)[1];
+}
+
 bool is_empty_list(Object obj) {
   return obj == empty_list;
 }
@@ -50,6 +74,12 @@ void print_obj(Object obj) {
     fprintf(fp, "#f");
   } else if (is_empty_list(obj)) {
     fprintf(fp, "()");
+  } else if (is_cons(obj)) {
+    fprintf(fp, "(");
+    print_obj(car(obj));
+    fprintf(fp, " . ");
+    print_obj(cdr(obj));
+    fprintf(fp, ")");
   } else {
     fprintf(fp, "<unknown %p>", (void*)obj);
   }
@@ -62,6 +92,7 @@ void println_obj(Object obj) {
 }
 
 int main() {
-  Object obj = scheme_entry();
+  Object heap[100];
+  Object obj = scheme_entry(heap);
   println_obj(obj);
 }
