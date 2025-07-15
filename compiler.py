@@ -171,7 +171,8 @@ def compile_expr(expr, code, si, env):
             emit(f"call {label}")
             emit(f"add rsp, {si_adjust}")
         case ["closure", str(lvar), *args]:
-            emit(f"movabs rax, {lvar}")
+            comment("Get a pointer to the label")
+            emit(f"lea rax, {lvar}")
             emit(f"mov {heap_at(0)}, rax")
             for idx, arg in enumerate(args):
                 assert isinstance(arg, str)
