@@ -42,6 +42,8 @@ HEAP_BASE = "rdi"
 
 def compile_expr(expr, code, si, env):
     emit = code.append
+    def comment(msg):
+        emit(f"# {msg}")
     def indirect(reg, offset):
         if offset >= 0:
             return f"[{reg}+{offset}]"
@@ -120,7 +122,9 @@ def compile_expr(expr, code, si, env):
             new_env = env.copy()
             new_si = si
             for (name, val) in bindings:
+                comment(f"Code for {name}")
                 compile_expr(val, code, new_si, env)
+                comment(f"Store {name} on the stack")
                 emit(f"mov {stack_at(new_si)}, rax")
                 new_env[name] = new_si
                 new_si -= WORD_SIZE
@@ -137,15 +141,19 @@ def compile_expr(expr, code, si, env):
             compile_expr(altern, code, si, env)
             emit(f"{L1}:")
         case ["cons", car, cdr]:
+            comment("Compile car")
             compile_expr(car, code, si, env)
             emit(f"mov {stack_at(si)}, rax")
+            comment("Compile cdr")
             compile_expr(cdr, code, si-WORD_SIZE, env)
             emit(f"mov {heap_at(WORD_SIZE)}, rax")
             emit(f"mov rax, {stack_at(si)}")
             emit(f"mov {heap_at(0)}, rax")
-            emit(f"lea rax, {heap_at(CONS_TAG)}")  # Tag the pointer
+            comment("Tag a cons cell")
+            emit(f"lea rax, {heap_at(CONS_TAG)}")
             size = align(2 * WORD_SIZE)
-            emit(f"add {HEAP_BASE}, {size}")  # Bump the heap
+            comment("Bump the heap pointer")
+            emit(f"add {HEAP_BASE}, {size}")
         case ["car", cell]:
             compile_expr(cell, code, si, env)
             emit(f"mov rax, {indirect('rax', 0*WORD_SIZE-CONS_TAG)}")
@@ -167,12 +175,15 @@ def compile_expr(expr, code, si, env):
             emit(f"mov {heap_at(0)}, rax")
             for idx, arg in enumerate(args):
                 assert isinstance(arg, str)
+                comment(f"Load closure cell #{idx}")
                 # Just a variable lookup; guaranteed not to allocate
                 compile_expr(arg, code, si, env)
                 emit(f"mov {heap_at((idx+1)*WORD_SIZE)}, rax")
-            emit(f"lea rax, {heap_at(CLOSURE_TAG)}")  # Tag the pointer
+            comment("Tag a closure pointer")
+            emit(f"lea rax, {heap_at(CLOSURE_TAG)}")
+            comment("Bump the heap pointer")
             size = align(WORD_SIZE + len(args)*WORD_SIZE)
-            emit(f"add {HEAP_BASE}, {size}")  # Bump the heap
+            emit(f"add {HEAP_BASE}, {size}")
         case _:
             raise NotImplementedError(expr)
 
