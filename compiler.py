@@ -40,18 +40,20 @@ NEXT_LABEL = -1
 # to take the heap pointer in the first scheme entry parameter
 HEAP_BASE = "rdi"
 
+def indirect(reg, offset):
+    if offset >= 0:
+        return f"[{reg}+{offset}]"
+    else:
+        return f"[{reg}{offset}]"
+
+def stack_at(si):
+    assert si < 0
+    return indirect("rsp", si)
+
 def compile_expr(expr, code, si, env):
     emit = code.append
     def comment(msg):
         emit(f"# {msg}")
-    def indirect(reg, offset):
-        if offset >= 0:
-            return f"[{reg}+{offset}]"
-        else:
-            return f"[{reg}{offset}]"
-    def stack_at(si):
-        assert si < 0
-        return indirect("rsp", si)
     def heap_at(offset):
         return indirect(HEAP_BASE, offset)
     def unique_label():
@@ -66,8 +68,7 @@ def compile_expr(expr, code, si, env):
         case int(_) | Char():
             emit(f"mov rax, {immediate_rep(expr)}")
         case str(_):
-            var_si = env[expr]
-            emit(f"mov rax, {stack_at(var_si)}")
+            emit(f"mov rax, {env[expr]}")
         case []:
             emit(f"mov rax, {EMPTY_LIST}")
         case ["add1", e]:
@@ -126,7 +127,7 @@ def compile_expr(expr, code, si, env):
                 compile_expr(val, code, new_si, env)
                 comment(f"Store {name} on the stack")
                 emit(f"mov {stack_at(new_si)}, rax")
-                new_env[name] = new_si
+                new_env[name] = stack_at(new_si)
                 new_si -= WORD_SIZE
             compile_expr(body, code, new_si, new_env)
         case ["if", test, conseq, altern]:
@@ -191,7 +192,7 @@ def compile_expr(expr, code, si, env):
 def compile_lexpr(lexpr, code):
     match lexpr:
         case ["code", params, freevars, body]:
-            env = {param: -(idx+1)*WORD_SIZE for idx, param in enumerate(params)}
+            env = {param: stack_at(-(idx+1)*WORD_SIZE) for idx, param in enumerate(params)}
             compile_expr(body, code, si=-(len(env)+1)*WORD_SIZE, env=env)
             code.append("ret")
         case _:
