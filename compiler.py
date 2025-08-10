@@ -221,7 +221,7 @@ def link(program, outfile=None, verbose=True):
         run(["ccache", "clang", "-O0", "-ggdb", "-c", "runtime.c"], verbose=verbose)
         compiled_object = f"{f.name}.o"
         run(["ccache", "clang", "-O0", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
-        run(["ccache", "clang", "-O0", "-masm=intel", "-no-pie", compiled_object, "runtime.o", "-o", outfile], verbose=verbose)
+        run(["ccache", "clang", "-masm=intel", "-no-pie", compiled_object, "runtime.o", "-o", outfile], verbose=verbose)
     return outfile
 
 class EndToEndTests(unittest.TestCase):
