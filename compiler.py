@@ -42,9 +42,8 @@ class Char:
 
 NEXT_LABEL = -1
 
-# Note: different from Ghuloum's choice of esi/rsi because we're going
-# to take the heap pointer in the first scheme entry parameter
-HEAP_BASE = "rdi"
+CLOSURE_BASE = "rdi"
+HEAP_BASE = "rsi"
 
 def indirect(reg, offset):
     if offset >= 0:
@@ -173,10 +172,31 @@ def compile_expr(expr, code, si, env):
                 compile_expr(arg, code, new_si, env)
                 emit(f"mov {stack_at(new_si)}, rax")
                 new_si -= WORD_SIZE
+            # Align to one word before the return address
             si_adjust = abs(si+WORD_SIZE)
             emit(f"sub rsp, {si_adjust}")
             emit(f"call {label}")
             emit(f"add rsp, {si_adjust}")
+        case ["funcall", func, *args]:
+            # Save a word for the return address and the closure pointer
+            clo_si = si - WORD_SIZE
+            retaddr_si = clo_si - WORD_SIZE
+            new_si = retaddr_si
+            # Evaluate arguments
+            for arg in args:
+                compile_expr(arg, code, new_si, env)
+                emit(f"mov {stack_at(new_si)}, rax")
+                new_si -= WORD_SIZE
+            compile_expr(func, code, new_si, env)
+            # Save the current closure pointer
+            emit(f"mov {stack_at(clo_si)}, {CLOSURE_BASE}")
+            emit(f"mov {CLOSURE_BASE}, rax")
+            # Align to one word before the return address
+            si_adjust = abs(si)
+            emit(f"sub rsp, {si_adjust}")
+            emit(f"call {indirect(CLOSURE_BASE, -CLOSURE_TAG)}")
+            emit(f"add rsp, {si_adjust}")
+            emit(f"mov {CLOSURE_BASE}, {stack_at(clo_si)}")
         case ["closure", str(lvar), *args]:
             comment("Get a pointer to the label")
             emit(f"lea rax, {lvar}")
@@ -396,6 +416,26 @@ class EndToEndTests(unittest.TestCase):
                     ["closure", "const", "a", "a", "a"],
                 ]
             ]), "<closure>")
+
+    def test_funcall_empty_closure(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], [], 3]],
+                ],
+             ["let", [["f", ["closure", "const"]]],
+              ["funcall", "f"]]
+            ]), "3")
+
+    def test_funcall_empty_closure_with_params(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", ["x", "y"], [], ["+", "x", "y"]]],
+                ],
+             ["let", [["f", ["closure", "const"]]],
+              ["funcall", "f", 3, 4]]
+            ]), "7")
 
 
 if __name__ == "__main__":

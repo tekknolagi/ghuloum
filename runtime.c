@@ -5,7 +5,7 @@
 
 typedef uint64_t Object;
 
-extern Object scheme_entry(Object *heap);
+extern Object scheme_entry(Object *closure, Object *heap);
 
 #define fixnum_mask 3
 #define fixnum_tag 0
@@ -99,6 +99,6 @@ void println_obj(Object obj) {
 
 int main() {
   Object heap[100];
-  Object obj = scheme_entry(heap);
+  Object obj = scheme_entry(NULL, heap);
   println_obj(obj);
 }
