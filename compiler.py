@@ -225,10 +225,10 @@ def link(program, outfile=None, verbose=True):
         with tempfile.NamedTemporaryFile(suffix=".o") as runtime_o:
             f.write(program.encode("utf-8"))
             f.flush()
-            run(["clang", "-O0", "-ggdb", "-c", "runtime.c", "-o", runtime_o.name], verbose=verbose)
+            run(["ccache", "clang", "-O0", "-ggdb", "-c", "runtime.c", "-o", runtime_o.name], verbose=verbose)
             compiled_object = f"{f.name}.o"
-            run(["clang", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
-            run(["clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-o", outfile], verbose=verbose)
+            run(["ccache", "clang", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
+            run(["ccache", "clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-o", outfile], verbose=verbose)
     return outfile
 
 class EndToEndTests(unittest.TestCase):
