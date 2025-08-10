@@ -231,7 +231,9 @@ def compile_expr(expr, code, si, env):
 def compile_lexpr(lexpr, code):
     match lexpr:
         case ["code", params, freevars, body]:
-            env = {param: stack_at(-(idx+1)*WORD_SIZE) for idx, param in enumerate(params)}
+            env = {}
+            for idx, param in enumerate(params):
+                env[param] = stack_at(-(idx+1)*WORD_SIZE)
             for idx, fvar in enumerate(freevars):
                 env[fvar] = indirect(CLOSURE_BASE, (idx+1)*WORD_SIZE - CLOSURE_TAG)
             compile_expr(body, code, si=-(len(env)+1)*WORD_SIZE, env=env)
@@ -335,7 +337,7 @@ class LambdaTests(unittest.TestCase):
     def test_freevar(self):
         self.assertEqual(lift_lambdas("x"), ["labels", [], "x"])
 
-    def test_plus(self):
+    def test_call_plus(self):
         self.assertEqual(lift_lambdas(["+", 3, 4]), ["labels", [], ["+", 3, 4]])
 
     def test_call(self):
@@ -429,6 +431,8 @@ class LambdaTests(unittest.TestCase):
                           ["closure", "f0"]])
 
     def test_if(self):
+        self.assertEqual(lift_lambdas(["if", 1, 2, 3]),
+                         ["labels", [], ["if", 1, 2, 3]])
         self.assertEqual(lift_lambdas(["lambda", [],
                                        ["if", "x", "y", "z"]]),
                          ["labels",
@@ -635,6 +639,11 @@ class EndToEndTests(unittest.TestCase):
 
     def test_lambda(self):
         self.assertEqual(self._run_program(["lambda", ["x"], "x"]), "<closure>")
+
+    def test_lambda_one_var(self):
+        self.assertEqual(self._run_program(
+            ["let", [["y", 5]], ["lambda", [], "y"]]),
+            "<closure>")
 
     def test_call_lambda(self):
         self.assertEqual(self._run_program([["lambda", ["x"], "x"], 3]), "3")
