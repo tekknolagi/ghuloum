@@ -1,3 +1,9 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "unittest-parallel",
+# ]
+# ///
 import tempfile
 import unittest
 from run import run
