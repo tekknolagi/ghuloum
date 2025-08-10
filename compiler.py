@@ -40,6 +40,12 @@ class Char:
         assert len(b) == 1
         self.byte = b[0]
 
+    def __eq__(self, other):
+        return isinstance(other, Char) and self.byte == other.byte
+
+    def __repr__(self):
+        return f"Char({self.byte})"
+
 NEXT_LABEL = -1
 
 CLOSURE_BASE = "rdi"
@@ -54,6 +60,13 @@ def indirect(reg, offset):
 def stack_at(si):
     assert si < 0
     return indirect("rsp", si)
+
+BUILTINS = frozenset({
+    "add1", "integer->char",
+    "char->integer", "null?", "zero?",
+    "not", "integer?", "boolean?", "+",
+    "cons", "car", "cdr",
+})
 
 def compile_expr(expr, code, si, env):
     emit = code.append
@@ -226,6 +239,50 @@ def compile_lexpr(lexpr, code):
         case _:
             raise NotImplementedError(lexpr)
 
+class LambdaConverter:
+    def __init__(self):
+        self.labels = {}
+
+    def push_label(self, params, freevars, body):
+        result = f"f{len(self.labels)}"
+        self.labels[result] = ["code", params, freevars, body]
+        return result
+
+    def convert(self, expr, bound, free):
+        match expr:
+            case int(_) | Char():
+                return expr
+            case str(_) if expr in bound or expr in BUILTINS:
+                return expr
+            case str(_):
+                free.add(expr)
+                return expr
+            case ["lambda", params, body]:
+                body_free = set()
+                assert all(isinstance(v, str) for v in params)
+                body = self.convert(body, bound | set(params), body_free)
+                assert all(isinstance(v, str) for v in body_free)
+                body_free = sorted(body_free)
+                label = self.push_label(params, body_free, body)
+                return ["closure", label, *body_free]
+            case ["let", bindings, body]:
+                raise NotImplementedError(expr)
+            case ["if", test, conseq, alt]:
+                raise NotImplementedError(expr)
+            case [func, *args]:
+                result = [] if isinstance(func, str) and func in BUILTINS else ["funcall"]
+                for e in expr:
+                    result.append(self.convert(e, bound, free))
+                return result
+            case _:
+                raise NotImplementedError(expr)
+
+def lift_lambdas(expr):
+    conv = LambdaConverter()
+    expr = conv.convert(expr, set(), set())
+    labels = [[name, code] for name, code in conv.labels.items()]
+    return ["labels", labels, expr]
+
 def compile_program(expr):
     code = [".intel_syntax", ".global scheme_entry"]
     match expr:
@@ -237,7 +294,9 @@ def compile_program(expr):
             compile_expr(body, code, si=-WORD_SIZE, env={})
             code.append("ret")
         case _:
-            raise NotImplementedError(expr)
+            expr = lift_lambdas(expr)
+            assert isinstance(expr, list) and expr[0] == "labels"
+            return compile_program(expr)
     return "\n".join(code)
 
 def link(program, outfile=None, verbose=True):
@@ -252,6 +311,50 @@ def link(program, outfile=None, verbose=True):
             run(["ccache", "clang", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
             run(["ccache", "clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-o", outfile], verbose=verbose)
     return outfile
+
+class LambdaTests(unittest.TestCase):
+    def test_int(self):
+        self.assertEqual(lift_lambdas(3), ["labels", [], 3])
+
+    def test_bool(self):
+        self.assertEqual(lift_lambdas(True), ["labels", [], True])
+        self.assertEqual(lift_lambdas(False), ["labels", [], False])
+
+    def test_char(self):
+        self.assertEqual(lift_lambdas(Char("a")), ["labels", [], Char("a")])
+
+    def test_freevar(self):
+        self.assertEqual(lift_lambdas("x"), ["labels", [], "x"])
+
+    def test_plus(self):
+        self.assertEqual(lift_lambdas(["+", 3, 4]), ["labels", [], ["+", 3, 4]])
+
+    def test_call(self):
+        self.assertEqual(lift_lambdas(["f", 3, 4]), ["labels", [], ["funcall", "f", 3, 4]])
+
+    def test_lambda_no_params_no_freevars(self):
+        self.assertEqual(lift_lambdas(["lambda", [], 3]),
+                         ["labels", [
+                             ["f0", ["code", [], [], 3]],
+                         ], ["closure", "f0"]])
+
+    def test_lambda_no_params_with_freevars(self):
+        self.assertEqual(lift_lambdas(["lambda", [], "z"]),
+                         ["labels", [
+                             ["f0", ["code", [], ["z"], "z"]],
+                         ], ["closure", "f0", "z"]])
+
+    def test_lambda_with_params_no_freevars(self):
+        self.assertEqual(lift_lambdas(["lambda", ["x"], "x"]),
+                         ["labels", [
+                             ["f0", ["code", ["x"], [], "x"]],
+                         ], ["closure", "f0"]])
+
+    def test_lambda_with_params_and_freevars(self):
+        self.assertEqual(lift_lambdas(["lambda", ["x"], ["+", "x", "y"]]),
+                         ["labels",
+                          [["f0", ["code", ["x"], ["y"], ["+", "x", "y"]]]],
+                          ["closure", "f0", "y"]])
 
 class EndToEndTests(unittest.TestCase):
     def _run(self, expr):
@@ -449,6 +552,12 @@ class EndToEndTests(unittest.TestCase):
               ["let", [["f", ["closure", "const", "v"]]],
                ["funcall", "f"]]]
             ]), "3")
+
+    def test_lambda(self):
+        self.assertEqual(self._run_program(["lambda", ["x"], "x"]), "<closure>")
+
+    def test_call_lambda(self):
+        self.assertEqual(self._run_program([["lambda", ["x"], "x"], 3]), "3")
 
 
 if __name__ == "__main__":
