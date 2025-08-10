@@ -639,6 +639,23 @@ class EndToEndTests(unittest.TestCase):
     def test_call_lambda(self):
         self.assertEqual(self._run_program([["lambda", ["x"], "x"], 3]), "3")
 
+    def test_lambda_lift_paper_example(self):
+        self.assertEqual(self._run_program(["let", [["x", 5]],
+                                            ["lambda", ["y"],
+                                             ["lambda", [],
+                                              ["+", "x", "y"]]]]),
+                         "<closure>")
+        self.assertEqual(self._run_program([["let", [["x", 5]],
+                                            ["lambda", ["y"],
+                                             ["lambda", [],
+                                              ["+", "x", "y"]]]], 4]),
+                         "<closure>")
+        self.assertEqual(self._run_program([[["let", [["x", 5]],
+                                            ["lambda", ["y"],
+                                             ["lambda", [],
+                                              ["+", "x", "y"]]]], 4]]),
+                         "9")
+
 
 if __name__ == "__main__":
     unittest.main()
