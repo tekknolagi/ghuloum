@@ -260,13 +260,19 @@ class LambdaConverter:
             case ["lambda", params, body]:
                 body_free = set()
                 assert all(isinstance(v, str) for v in params)
-                body = self.convert(body, bound | set(params), body_free)
+                body = self.convert(body, set(params), body_free)
                 assert all(isinstance(v, str) for v in body_free)
+                free.update(body_free - bound)
                 body_free = sorted(body_free)
                 label = self.push_label(params, body_free, body)
                 return ["closure", label, *body_free]
             case ["let", bindings, body]:
-                raise NotImplementedError(expr)
+                new_bindings = []
+                names = {name for name, _ in bindings}
+                for name, val_expr in bindings:
+                    new_bindings.append([name, self.convert(val_expr, bound, free)])
+                new_body = self.convert(body, bound | names, free)
+                return ["let", new_bindings, new_body]
             case ["if", test, conseq, alt]:
                 raise NotImplementedError(expr)
             case [func, *args]:
@@ -355,6 +361,59 @@ class LambdaTests(unittest.TestCase):
                          ["labels",
                           [["f0", ["code", ["x"], ["y"], ["+", "x", "y"]]]],
                           ["closure", "f0", "y"]])
+
+    def test_let(self):
+        self.assertEqual(lift_lambdas(["let", [["x", 5]], "x"]),
+                         ["labels", [], ["let", [["x", 5]], "x"]])
+
+    def test_let_lambda(self):
+        self.assertEqual(lift_lambdas(["let", [["x", 5]],
+                                       ["lambda", ["y"],
+                                        ["+", "x", "y"]]]),
+                         ["labels",
+                          [["f0", ["code", ["y"], ["x"], ["+", "x", "y"]]]],
+                          ["let", [["x", 5]], ["closure", "f0", "x"]]])
+
+    def test_nested_lambda(self):
+        self.assertEqual(lift_lambdas(["lambda", ["x"],
+                                       ["lambda", ["y"],
+                                        ["+", "x", "y"]]]),
+                         ["labels",
+                          [["f0", ["code", ["y"], ["x"], ["+", "x", "y"]]],
+                           ["f1", ["code", ["x"], [], ["closure", "f0", "x"]]]],
+                          ["closure", "f1"]])
+
+    def test_nested_let(self):
+        self.assertEqual(lift_lambdas(["let", [["x", 5]],
+                                       ["let", [["y", 6]],
+                                        ["lambda", [],
+                                         ["+", "x", "y"]]]]),
+                         ["labels",
+                          [["f0", ["code", [], ["x", "y"], ["+", "x", "y"]]]],
+                          ["let", [["x", 5]],
+                           ["let", [["y", 6]],
+                            ["closure", "f0", "x", "y"]]]])
+
+    def test_let_inside_lambda(self):
+        self.assertEqual(lift_lambdas(["lambda", ["x"],
+                                       ["let", [["y", 6]],
+                                        ["+", "x", "y"]]]),
+                         ["labels",
+                          [["f0", ["code", ["x"], [],
+                                   ["let", [["y", 6]],
+                                    ["+", "x", "y"]]]]],
+                          ["closure", "f0"]])
+
+    def test_paper_example(self):
+        self.assertEqual(lift_lambdas(["let", [["x", 5]],
+                                         ["lambda", ["y"],
+                                          ["lambda", [],
+                                           ["+", "x", "y"]]]]),
+                         ["labels", [
+                             ["f0", ["code", [], ["x", "y"], ["+", "x", "y"]]],
+                             ["f1", ["code", ["y"], ["x"], ["closure", "f0", "x", "y"]]],
+                           ],
+                          ["let", [["x", 5]], ["closure", "f1", "x"]]])
 
 class EndToEndTests(unittest.TestCase):
     def _run(self, expr):
