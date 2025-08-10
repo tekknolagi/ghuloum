@@ -310,19 +310,6 @@ def compile_program(expr):
             return compile_program(expr)
     return "\n".join(code)
 
-def link(program, outfile=None, verbose=True):
-    if not outfile:
-        outfile = "a.out"
-    with tempfile.NamedTemporaryFile(suffix=".s") as f:
-        with tempfile.NamedTemporaryFile(suffix=".o") as runtime_o:
-            f.write(program.encode("utf-8"))
-            f.flush()
-            run(["ccache", "clang", "-O0", "-ggdb", "-c", "runtime.c", "-o", runtime_o.name], verbose=verbose)
-            compiled_object = f"{f.name}.o"
-            run(["ccache", "clang", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
-            run(["ccache", "clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-o", outfile], verbose=verbose)
-    return outfile
-
 class LambdaTests(unittest.TestCase):
     def test_int(self):
         self.assertEqual(lift_lambdas(3), ["labels", [], 3])
@@ -439,6 +426,19 @@ class LambdaTests(unittest.TestCase):
                           [["f0", ["code", [], ["x", "y", "z"],
                                    ["if", "x", "y", "z"]]]],
                           ["closure", "f0", "x", "y", "z"]])
+
+def link(program, outfile=None, verbose=True):
+    if not outfile:
+        outfile = "a.out"
+    with tempfile.NamedTemporaryFile(suffix=".s") as f:
+        with tempfile.NamedTemporaryFile(suffix=".o") as runtime_o:
+            f.write(program.encode("utf-8"))
+            f.flush()
+            run(["ccache", "clang", "-O0", "-ggdb", "-c", "runtime.c", "-o", runtime_o.name], verbose=verbose)
+            compiled_object = f"{f.name}.o"
+            run(["ccache", "clang", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
+            run(["ccache", "clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-o", outfile], verbose=verbose)
+    return outfile
 
 class EndToEndTests(unittest.TestCase):
     def _run(self, expr):
