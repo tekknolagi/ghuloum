@@ -219,6 +219,8 @@ def compile_lexpr(lexpr, code):
     match lexpr:
         case ["code", params, freevars, body]:
             env = {param: stack_at(-(idx+1)*WORD_SIZE) for idx, param in enumerate(params)}
+            for idx, fvar in enumerate(freevars):
+                env[fvar] = indirect(CLOSURE_BASE, (idx+1)*WORD_SIZE - CLOSURE_TAG)
             compile_expr(body, code, si=-(len(env)+1)*WORD_SIZE, env=env)
             code.append("ret")
         case _:
@@ -436,6 +438,17 @@ class EndToEndTests(unittest.TestCase):
              ["let", [["f", ["closure", "const"]]],
               ["funcall", "f", 3, 4]]
             ]), "7")
+
+    def test_funcall_closure_with_freevar(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], ["z"], "z"]],
+                ],
+             ["let", [["v", 3]],
+              ["let", [["f", ["closure", "const", "v"]]],
+               ["funcall", "f"]]]
+            ]), "3")
 
 
 if __name__ == "__main__":
