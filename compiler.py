@@ -274,7 +274,10 @@ class LambdaConverter:
                 new_body = self.convert(body, bound | names, free)
                 return ["let", new_bindings, new_body]
             case ["if", test, conseq, alt]:
-                raise NotImplementedError(expr)
+                return ["if",
+                        self.convert(test, bound, free),
+                        self.convert(conseq, bound, free),
+                        self.convert(alt, bound, free)]
             case [func, *args]:
                 result = [] if isinstance(func, str) and func in BUILTINS else ["funcall"]
                 for e in expr:
@@ -414,6 +417,24 @@ class LambdaTests(unittest.TestCase):
                              ["f1", ["code", ["y"], ["x"], ["closure", "f0", "x", "y"]]],
                            ],
                           ["let", [["x", 5]], ["closure", "f1", "x"]]])
+
+    def test_freevar_inside_let_binding(self):
+        self.assertEqual(lift_lambdas(["lambda", ["x"],
+                                       ["let", [["y", "x"]],
+                                        ["+", "x", "y"]]]),
+                         ["labels",
+                          [["f0", ["code", ["x"], [],
+                                   ["let", [["y", "x"]],
+                                    ["+", "x", "y"]]]]],
+                          ["closure", "f0"]])
+
+    def test_if(self):
+        self.assertEqual(lift_lambdas(["lambda", [],
+                                       ["if", "x", "y", "z"]]),
+                         ["labels",
+                          [["f0", ["code", [], ["x", "y", "z"],
+                                   ["if", "x", "y", "z"]]]],
+                          ["closure", "f0", "x", "y", "z"]])
 
 class EndToEndTests(unittest.TestCase):
     def _run(self, expr):
