@@ -241,57 +241,49 @@ def compile_lexpr(lexpr, code):
         case _:
             raise NotImplementedError(lexpr)
 
-class LambdaConverter:
-    def __init__(self):
-        self.labels = {}
-
-    def push_label(self, params, freevars, body):
-        result = f"f{len(self.labels)}"
-        self.labels[result] = ["code", params, freevars, body]
-        return result
-
-    def convert(self, expr, bound, free):
-        match expr:
-            case int(_) | Char():
-                return expr
-            case str(_) if expr in bound or expr in BUILTINS:
-                return expr
-            case str(_):
-                free.add(expr)
-                return expr
-            case ["lambda", params, body]:
-                body_free = set()
-                assert all(isinstance(v, str) for v in params)
-                body = self.convert(body, set(params), body_free)
-                assert all(isinstance(v, str) for v in body_free)
-                free.update(body_free - bound)
-                body_free = sorted(body_free)
-                label = self.push_label(params, body_free, body)
-                return ["closure", label, *body_free]
-            case ["let", bindings, body]:
-                new_bindings = []
-                names = {name for name, _ in bindings}
-                for name, val_expr in bindings:
-                    new_bindings.append([name, self.convert(val_expr, bound, free)])
-                new_body = self.convert(body, bound | names, free)
-                return ["let", new_bindings, new_body]
-            case ["if", test, conseq, alt]:
-                return ["if",
-                        self.convert(test, bound, free),
-                        self.convert(conseq, bound, free),
-                        self.convert(alt, bound, free)]
-            case [func, *args]:
-                result = [] if isinstance(func, str) and func in BUILTINS else ["funcall"]
-                for e in expr:
-                    result.append(self.convert(e, bound, free))
-                return result
-            case _:
-                raise NotImplementedError(expr)
+def lift_lambdas_rec(expr, labels, bound, free):
+    match expr:
+        case int(_) | Char():
+            return expr
+        case str(_) if expr in bound or expr in BUILTINS:
+            return expr
+        case str(_):
+            free.add(expr)
+            return expr
+        case ["lambda", params, body]:
+            body_free = set()
+            assert all(isinstance(v, str) for v in params)
+            body = lift_lambdas_rec(body, labels, set(params), body_free)
+            assert all(isinstance(v, str) for v in body_free)
+            free.update(body_free - bound)
+            body_free = sorted(body_free)
+            label = f"f{len(labels)}"
+            labels[label] = ["code", params, body_free, body]
+            return ["closure", label, *body_free]
+        case ["let", bindings, body]:
+            new_bindings = []
+            names = {name for name, _ in bindings}
+            for name, val_expr in bindings:
+                new_bindings.append([name, lift_lambdas_rec(val_expr, labels, bound, free)])
+            new_body = lift_lambdas_rec(body, labels, bound | names, free)
+            return ["let", new_bindings, new_body]
+        case ["if", test, conseq, alt]:
+            return ["if",
+                    lift_lambdas_rec(test, labels, bound, free),
+                    lift_lambdas_rec(conseq, labels, bound, free),
+                    lift_lambdas_rec(alt, labels, bound, free)]
+        case [func, *args]:
+            result = [] if isinstance(func, str) and func in BUILTINS else ["funcall"]
+            for e in expr:
+                result.append(lift_lambdas_rec(e, labels, bound, free))
+            return result
+        case _:
+            raise NotImplementedError(expr)
 
 def lift_lambdas(expr):
-    conv = LambdaConverter()
-    expr = conv.convert(expr, set(), set())
-    labels = [[name, code] for name, code in conv.labels.items()]
+    labels = {}
+    expr = lift_lambdas_rec(expr, labels, set(), set())
+    labels = [[name, code] for name, code in labels.items()]
     return ["labels", labels, expr]
 
 def compile_program(expr):
