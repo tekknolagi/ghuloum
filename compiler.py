@@ -176,10 +176,10 @@ def compile_expr(expr, code, si, env):
             emit(f"add {HEAP_BASE}, {size}")
         case ["car", cell]:
             compile_expr(cell, code, si, env)
-            emit(f"mov {ACC}, {indirect('{ACC}', 0*WORD_SIZE-CONS_TAG)}")
+            emit(f"mov {ACC}, {indirect(ACC, 0*WORD_SIZE-CONS_TAG)}")
         case ["cdr", cell]:
             compile_expr(cell, code, si, env)
-            emit(f"mov {ACC}, {indirect('{ACC}', 1*WORD_SIZE-CONS_TAG)}")
+            emit(f"mov {ACC}, {indirect(ACC, 1*WORD_SIZE-CONS_TAG)}")
         case ["labelcall", str(label), *args]:
             new_si = si - WORD_SIZE  # Save a word for the return address
             for arg in args:
