@@ -51,6 +51,7 @@ NEXT_LABEL = -1
 CLOSURE_BASE = "rdi"
 HEAP_BASE = "rsi"
 ACC = "rax"
+STACK = "rsp"
 
 def indirect(reg, offset):
     if offset >= 0:
@@ -60,7 +61,7 @@ def indirect(reg, offset):
 
 def stack_at(si):
     assert si < 0
-    return indirect("rsp", si)
+    return indirect(STACK, si)
 
 BUILTINS = frozenset({
     "add1", "integer->char",
@@ -188,9 +189,9 @@ def compile_expr(expr, code, si, env):
                 new_si -= WORD_SIZE
             # Align to one word before the return address
             si_adjust = abs(si+WORD_SIZE)
-            emit(f"sub rsp, {si_adjust}")
+            emit(f"sub {STACK}, {si_adjust}")
             emit(f"call {label}")
-            emit(f"add rsp, {si_adjust}")
+            emit(f"add {STACK}, {si_adjust}")
         case ["funcall", func, *args]:
             # Save a word for the return address and the closure pointer
             clo_si = si - WORD_SIZE
@@ -207,9 +208,9 @@ def compile_expr(expr, code, si, env):
             emit(f"mov {CLOSURE_BASE}, {ACC}")
             # Align to one word before the return address
             si_adjust = abs(si)
-            emit(f"sub rsp, {si_adjust}")
+            emit(f"sub {STACK}, {si_adjust}")
             emit(f"call {indirect(CLOSURE_BASE, -CLOSURE_TAG)}")
-            emit(f"add rsp, {si_adjust}")
+            emit(f"add {STACK}, {si_adjust}")
             emit(f"mov {CLOSURE_BASE}, {stack_at(clo_si)}")
         case ["closure", str(lvar), *args]:
             comment("Get a pointer to the label")
