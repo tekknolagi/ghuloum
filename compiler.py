@@ -4,9 +4,12 @@
 #     "unittest-parallel",
 # ]
 # ///
+import subprocess
 import tempfile
 import unittest
 from run import run
+
+HAVE_CCACHE = False
 
 WORD_SIZE = 8
 FIXNUM_SHIFT = 2
@@ -422,14 +425,15 @@ class LambdaTests(unittest.TestCase):
 def link(program, outfile=None, verbose=True):
     if not outfile:
         outfile = "a.out"
+    ccache = ["ccache"] if HAVE_CCACHE else []
     with tempfile.NamedTemporaryFile(suffix=".s") as f:
         with tempfile.NamedTemporaryFile(suffix=".o") as runtime_o:
             f.write(program.encode("utf-8"))
             f.flush()
-            run(["ccache", "clang", "-O0", "-ggdb", "-c", "runtime.c", "-o", runtime_o.name], verbose=verbose)
+            run([*ccache, "clang", "-O0", "-ggdb", "-c", "runtime.c", "-o", runtime_o.name], verbose=verbose)
             compiled_object = f"{f.name}.o"
-            run(["ccache", "clang", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
-            run(["ccache", "clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-o", outfile], verbose=verbose)
+            run([*ccache, "clang", "-masm=intel", f.name, "-c", "-o", compiled_object], verbose=verbose)
+            run([*ccache, "clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-o", outfile], verbose=verbose)
     return outfile
 
 class EndToEndTests(unittest.TestCase):
@@ -659,4 +663,9 @@ class EndToEndTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    try:
+        run(["ccache"], verbose=False, check=True, capture_output=True)
+        HAVE_CCACHE = TRUE
+    except subprocess.CalledProcessError:
+        print("Warning: ccache not found; compilation may be slow")
     unittest.main()
