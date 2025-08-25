@@ -14,6 +14,10 @@ jobs:
         PYTHON: ["3.12", "3.13", "3.14"]
     runs-on: ubuntu-latest
     steps:
+    - name: Update apt cache
+      run: sudo apt update
+    - name: Install ccache
+      run: sudo apt install -y ccache
     - uses: actions/checkout@v4
     - name: Install uv
       uses: astral-sh/setup-uv@v5
