@@ -1,0 +1,25 @@
+name: Run tests
+
+on:
+  push:
+    branches: [ trunk ]
+  pull_request:
+    branches: [ trunk ]
+
+
+jobs:
+  run_unit_tests:
+    strategy:
+      matrix:
+        PYTHON: ["3.12", "3.13", "3.14"]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+    - name: Install Python
+      run: uv python install ${{matrix.PYTHON}}
+    - name: Pin Python
+      run: uv python pin ${{matrix.PYTHON}}
+    - name: Run tests
+      run: uv run python compiler.py
