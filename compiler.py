@@ -4,7 +4,6 @@
 #     "unittest-parallel",
 # ]
 # ///
-import subprocess
 import tempfile
 import unittest
 from run import run
@@ -666,6 +665,6 @@ if __name__ == "__main__":
     try:
         run(["ccache"], verbose=False, check=True, capture_output=True)
         HAVE_CCACHE = TRUE
-    except subprocess.CalledProcessError:
+    except FileNotFoundError:
         print("Warning: ccache not found; compilation may be slow")
     unittest.main()
