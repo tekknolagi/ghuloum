@@ -23,6 +23,14 @@ def unbox_fixnum(v):
     assert (v & FIXNUM_MASK) == FIXNUM_TAG
     return v >> FIXNUM_SHIFT
 
+def box_char(c):
+    return (c.byte << CHAR_SHIFT) | CHAR_TAG
+
+def unbox_char(v):
+    assert (v & 0xFF) == CHAR_TAG
+    byte = (v >> CHAR_SHIFT) & 0xFF
+    return Char(chr(byte))
+
 def immediate_rep(val):
     match val:
         case bool(_):
@@ -30,7 +38,7 @@ def immediate_rep(val):
         case int(_):
             return box_fixnum(val)
         case Char():
-            return (val.byte << CHAR_SHIFT) | CHAR_TAG
+            return box_char(val)
         case _:
             raise NotImplementedError(val)
 
@@ -56,6 +64,8 @@ BUILTINS = frozenset({
 class I:
     LOAD64, \
     PRIM_ADD1, \
+    PRIM_INTEGER_TO_CHAR, \
+    PRIM_CHAR_TO_INTEGER, \
     *_ = range(1000)
 
 def compile_expr(expr, code, si, env):
@@ -67,6 +77,12 @@ def compile_expr(expr, code, si, env):
         case ["add1", e]:
             compile_expr(e, code, si, env)
             emit(I.PRIM_ADD1)
+        case ["integer->char", e]:
+            compile_expr(e, code, si, env)
+            emit(I.PRIM_INTEGER_TO_CHAR)
+        case ["char->integer", e]:
+            compile_expr(e, code, si, env)
+            emit(I.PRIM_CHAR_TO_INTEGER)
         case _:
             raise NotImplementedError(expr)
 
@@ -89,6 +105,12 @@ def interpret(code):
             case I.PRIM_ADD1:
                 v = stack.pop()
                 push(box_fixnum(unbox_fixnum(v) + 1))
+            case I.PRIM_INTEGER_TO_CHAR:
+                v = stack.pop()
+                push(immediate_rep(Char(chr(unbox_fixnum(v)))))
+            case I.PRIM_CHAR_TO_INTEGER:
+                v = stack.pop()
+                push(box_fixnum(unbox_char(v).byte))
             case _:
                 raise NotImplementedError(instr)
     return stack.pop()
@@ -98,6 +120,8 @@ class EndToEndTests(unittest.TestCase):
         bytecode = []
         compile_expr(expr, bytecode, 0, {})
         return interpret(bytecode)
+
+    # TODO(max): Add assertEqual that understands tagged values
 
     def test_positive_fixnum(self):
         self.assertEqual(self._run(42), immediate_rep(42))
@@ -113,6 +137,18 @@ class EndToEndTests(unittest.TestCase):
 
     def test_nested_add1(self):
         self.assertEqual(self._run(["add1", ["add1", 3]]), immediate_rep(5))
+
+    def test_integer_to_char(self):
+        self.assertEqual(self._run(["integer->char", 65]), immediate_rep(Char('A')))
+
+    def test_nested_integer_to_char(self):
+        self.assertEqual(self._run(["integer->char", ["add1", 65]]), immediate_rep(Char('B')))
+
+    def test_char_to_integer(self):
+        self.assertEqual(self._run(["char->integer", Char('A')]), immediate_rep(65))
+
+    def test_nested_char_to_integer(self):
+        self.assertEqual(self._run(["char->integer", ["integer->char", 66]]), immediate_rep(66))
 
 if __name__ == "__main__":
     unittest.main()
