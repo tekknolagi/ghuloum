@@ -172,8 +172,6 @@ class EndToEndTests(unittest.TestCase):
         bytecode = []
         compile_expr(expr, bytecode, 0, {})
         return interpret(bytecode)
-
-    # TODO(max): Add assertEqual that understands tagged values
     
     def assertTaggedEqual(self, a, b):
         if is_fixnum(a) and is_fixnum(b):
