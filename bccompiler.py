@@ -80,51 +80,77 @@ class I:
     PRIM_IS_INTEGER, \
     PRIM_IS_BOOLEAN, \
     PRIM_ADD, \
+    LOAD_LOCAL, \
+    STORE_LOCAL, \
     *_ = range(1000)
 
-def compile_expr(expr, code, si, env):
-    emit = code.append
-    match expr:
-        case bool(_):
-            emit(I.LOAD64)
-            emit(box_bool(expr))
-        case int(_):
-            emit(I.LOAD64)
-            emit(box_fixnum(expr))
-        case Char():
-            emit(I.LOAD64)
-            emit(box_char(expr))
-        case ["add1", e]:
-            compile_expr(e, code, si, env)
-            emit(I.PRIM_ADD1)
-        case ["integer->char", e]:
-            compile_expr(e, code, si, env)
-            emit(I.PRIM_INTEGER_TO_CHAR)
-        case ["char->integer", e]:
-            compile_expr(e, code, si, env)
-            emit(I.PRIM_CHAR_TO_INTEGER)
-        case ["zero?", e]:
-            compile_expr(e, code, si, env)
-            emit(I.PRIM_IS_ZERO)
-        case ["not", e]:
-            compile_expr(e, code, si, env)
-            emit(I.PRIM_NOT)
-        case ["integer?", e]:
-            compile_expr(e, code, si, env)
-            emit(I.PRIM_IS_INTEGER)
-        case ["boolean?", e]:
-            compile_expr(e, code, si, env)
-            emit(I.PRIM_IS_BOOLEAN)
-        case ["+", e0, e1]:
-            compile_expr(e0, code, si, env)
-            compile_expr(e1, code, si, env)
-            emit(I.PRIM_ADD)
-        case _:
-            raise NotImplementedError(expr)
+class Compiler:
+    def __init__(self):
+        self.code = []
+        self.max_locals_count = 0
 
-def interpret(code):
+    def compile(self, expr, env):
+        emit = self.code.append
+        match expr:
+            case bool(_):
+                emit(I.LOAD64)
+                emit(box_bool(expr))
+            case int(_):
+                emit(I.LOAD64)
+                emit(box_fixnum(expr))
+            case str(_):
+                match env.get(expr):
+                    case ["local", slot]:
+                        emit(I.LOAD_LOCAL)
+                        emit(slot)
+                    case None:
+                        raise NameError(f"Unbound variable: {expr}")
+                    case v:
+                        raise NotImplementedError("name resolution", v)
+            case Char():
+                emit(I.LOAD64)
+                emit(box_char(expr))
+            case ["add1", e]:
+                self.compile(e, env)
+                emit(I.PRIM_ADD1)
+            case ["integer->char", e]:
+                self.compile(e, env)
+                emit(I.PRIM_INTEGER_TO_CHAR)
+            case ["char->integer", e]:
+                self.compile(e, env)
+                emit(I.PRIM_CHAR_TO_INTEGER)
+            case ["zero?", e]:
+                self.compile(e, env)
+                emit(I.PRIM_IS_ZERO)
+            case ["not", e]:
+                self.compile(e, env)
+                emit(I.PRIM_NOT)
+            case ["integer?", e]:
+                self.compile(e, env)
+                emit(I.PRIM_IS_INTEGER)
+            case ["boolean?", e]:
+                self.compile(e, env)
+                emit(I.PRIM_IS_BOOLEAN)
+            case ["+", e0, e1]:
+                self.compile(e0, env)
+                self.compile(e1, env)
+                emit(I.PRIM_ADD)
+            case ["let", [[name, value]], body]:
+                self.compile(value, env)
+                slot = len(env)
+                emit(I.STORE_LOCAL)
+                emit(slot)
+                self.max_locals_count = max(self.max_locals_count, slot + 1)
+                self.compile(body, {**env, name: ["local", slot]})
+            case _:
+                raise NotImplementedError(expr)
+
+def interpret(code, max_locals_count):
     pc = 0
     stack = []
+    # Set up locals space in frame
+    stack.extend([0] * max_locals_count)
+    frame_base = 0
     heap = bytearray()
     def push(val):
         stack.append(val)
@@ -163,15 +189,22 @@ def interpret(code):
                 right = stack.pop()
                 left = stack.pop()
                 push(box_fixnum(unbox_fixnum(left) + unbox_fixnum(right)))
+            case I.LOAD_LOCAL:
+                slot = readword()
+                push(stack[frame_base + slot])
+            case I.STORE_LOCAL:
+                slot = readword()
+                val = stack.pop()
+                stack[frame_base + slot] = val
             case _:
                 raise NotImplementedError(instr)
     return stack.pop()
 
 class EndToEndTests(unittest.TestCase):
     def _run(self, expr):
-        bytecode = []
-        compile_expr(expr, bytecode, 0, {})
-        return interpret(bytecode)
+        c = Compiler()
+        c.compile(expr, {})
+        return interpret(c.code, c.max_locals_count)
     
     def assertTaggedEqual(self, a, b):
         if is_fixnum(a) and is_fixnum(b):
@@ -238,6 +271,22 @@ class EndToEndTests(unittest.TestCase):
     def test_add(self):
         self.assertTaggedEqual(self._run(["+", 40, 2]), box_fixnum(42))
         self.assertTaggedEqual(self._run(["+", ["add1", 1], ["add1", 2]]), box_fixnum(5))
+
+    def test_let_binds_name(self):
+        expr = ["let", [["x", 3]],
+                ["+", "x", 4]]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(7))
+
+    def test_let_expression(self):
+        expr = ["let", [["x", ["add1", 5]]],
+                "x"]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(6))
+
+    def test_nested_let(self):
+        expr = ["let", [["x", 10]],
+                ["let", [["y", ["add1", "x"]]],
+                    ["+", "x", "y"]]]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(21))
 
 if __name__ == "__main__":
     unittest.main()
