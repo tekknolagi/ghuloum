@@ -14,6 +14,7 @@ EMPTY_LIST = 0b00101111
 CONS_TAG = 0b001
 CLOSURE_TAG = 0b110
 HEAP_ALIGNMENT = 2 * WORD_SIZE
+HEAP_MASK = HEAP_ALIGNMENT - 1
 
 def is_fixnum(v):
     return (v & FIXNUM_MASK) == FIXNUM_TAG
@@ -62,6 +63,9 @@ class Char:
     def __repr__(self):
         return f"Char({self.byte})"
 
+def is_cons(v):
+    return (v & HEAP_MASK) == CONS_TAG
+
 BUILTINS = frozenset({
     "add1", "integer->char",
     "char->integer", "null?", "zero?",
@@ -84,6 +88,9 @@ class I:
     STORE_LOCAL, \
     JUMP_IF_FALSE, \
     JUMP, \
+    CONS, \
+    PRIM_CAR, \
+    PRIM_CDR, \
     *_ = range(1000)
 
 class Compiler:
@@ -163,76 +170,128 @@ class Compiler:
                 patch_placeholder(jump_if_false_pos)
                 self.compile(altern, env)
                 patch_placeholder(jump_pos)
+            case ["cons", e0, e1]:
+                self.compile(e0, env)
+                self.compile(e1, env)
+                emit(I.CONS)
+            case ["car", e]:
+                self.compile(e, env)
+                emit(I.PRIM_CAR)
+            case ["cdr", e]:
+                self.compile(e, env)
+                emit(I.PRIM_CDR)
             case _:
                 raise NotImplementedError(expr)
 
-def interpret(code, max_locals_count):
-    pc = 0
-    stack = []
-    # Set up locals space in frame
-    stack.extend([0] * max_locals_count)
-    frame_base = 0
-    heap = bytearray()
-    def push(val):
-        stack.append(val)
-    def readword():
-        nonlocal pc
-        val = code[pc]
-        pc += 1
-        return val
-    while pc < len(code):
-        instr = readword()
-        match instr:
-            case I.LOAD64:
-                push(readword())
-            case I.PRIM_ADD1:
-                v = stack.pop()
-                push(box_fixnum(unbox_fixnum(v) + 1))
-            case I.PRIM_INTEGER_TO_CHAR:
-                v = stack.pop()
-                push(box_char(Char(chr(unbox_fixnum(v)))))
-            case I.PRIM_CHAR_TO_INTEGER:
-                v = stack.pop()
-                push(box_fixnum(unbox_char(v).byte))
-            case I.PRIM_IS_ZERO:
-                v = stack.pop()
-                push(box_bool(v == box_fixnum(0)))
-            case I.PRIM_NOT:
-                v = stack.pop()
-                push(box_bool(not unbox_bool(v)))
-            case I.PRIM_IS_INTEGER:
-                v = stack.pop()
-                push(box_bool(is_fixnum(v)))
-            case I.PRIM_IS_BOOLEAN:
-                v = stack.pop()
-                push(box_bool(is_bool(v)))
-            case I.PRIM_ADD:
-                right = stack.pop()
-                left = stack.pop()
-                push(box_fixnum(unbox_fixnum(left) + unbox_fixnum(right)))
-            case I.LOAD_LOCAL:
-                slot = readword()
-                push(stack[frame_base + slot])
-            case I.STORE_LOCAL:
-                slot = readword()
-                val = stack.pop()
-                stack[frame_base + slot] = val
-            case I.JUMP_IF_FALSE:
-                target = readword()
-                cond = stack.pop()
-                if cond == box_bool(False):
-                    pc = target
-            case I.JUMP:
-                pc = readword()
-            case _:
-                raise NotImplementedError(instr)
-    return stack.pop()
+def heap_at(heap, addr, size=WORD_SIZE):
+    assert addr >= 0
+    return int.from_bytes(heap[addr:addr + size], 'little')
+
+def heap_at_put(heap, addr, val, size=WORD_SIZE):
+    assert addr >= 0
+    heap[addr:addr + size] = val.to_bytes(size, 'little')
+
+def car(heap, obj):
+    assert is_cons(obj)
+    addr = obj - CONS_TAG
+    return heap_at(heap, addr)
+
+def cdr(heap, obj):
+    assert is_cons(obj)
+    addr = obj - CONS_TAG
+    return heap_at(heap, addr + WORD_SIZE)
+
+class Runtime:
+    def __init__(self, heap_size=64):
+        self.heap = memoryview(bytearray(heap_size))
+        self.heap_ptr = 0
+
+    def interpret(self, code, max_locals_count):
+        pc = 0
+        stack = []
+        # Set up locals space in frame
+        stack.extend([0] * max_locals_count)
+        frame_base = 0
+        def push(val):
+            stack.append(val)
+        def pop():
+            return stack.pop()
+        def readword():
+            nonlocal pc
+            val = code[pc]
+            pc += 1
+            return val
+        while pc < len(code):
+            instr = readword()
+            match instr:
+                case I.LOAD64:
+                    push(readword())
+                case I.PRIM_ADD1:
+                    v = pop()
+                    push(box_fixnum(unbox_fixnum(v) + 1))
+                case I.PRIM_INTEGER_TO_CHAR:
+                    v = pop()
+                    push(box_char(Char(chr(unbox_fixnum(v)))))
+                case I.PRIM_CHAR_TO_INTEGER:
+                    v = pop()
+                    push(box_fixnum(unbox_char(v).byte))
+                case I.PRIM_IS_ZERO:
+                    v = pop()
+                    push(box_bool(v == box_fixnum(0)))
+                case I.PRIM_NOT:
+                    v = pop()
+                    push(box_bool(not unbox_bool(v)))
+                case I.PRIM_IS_INTEGER:
+                    v = pop()
+                    push(box_bool(is_fixnum(v)))
+                case I.PRIM_IS_BOOLEAN:
+                    v = pop()
+                    push(box_bool(is_bool(v)))
+                case I.PRIM_ADD:
+                    right = pop()
+                    left = pop()
+                    push(box_fixnum(unbox_fixnum(left) + unbox_fixnum(right)))
+                case I.LOAD_LOCAL:
+                    slot = readword()
+                    push(stack[frame_base + slot])
+                case I.STORE_LOCAL:
+                    slot = readword()
+                    val = pop()
+                    stack[frame_base + slot] = val
+                case I.JUMP_IF_FALSE:
+                    target = readword()
+                    cond = pop()
+                    if cond == box_bool(False):
+                        pc = target
+                case I.JUMP:
+                    pc = readword()
+                case I.CONS:
+                    cdr_ = pop()
+                    car_ = pop()
+                    heap_at_put(self.heap, self.heap_ptr, car_)
+                    heap_at_put(self.heap, self.heap_ptr + WORD_SIZE, cdr_)
+                    obj = self.heap_ptr | CONS_TAG
+                    push(obj)
+                    self.heap_ptr += 2 * WORD_SIZE
+                case I.PRIM_CAR:
+                    v = pop()
+                    push(car(self.heap, v))
+                case I.PRIM_CDR:
+                    v = pop()
+                    push(cdr(self.heap, v))
+                case _:
+                    raise NotImplementedError(instr)
+        # TODO(max): Figure out why this fails for let tests
+        # assert len(stack) == frame_base + 1
+        return pop()
 
 class EndToEndTests(unittest.TestCase):
-    def _run(self, expr):
+    def _run(self, expr, runtime=None):
         c = Compiler()
         c.compile(expr, {})
-        return interpret(c.code, c.max_locals_count)
+        if runtime is None:
+            runtime = Runtime()
+        return runtime.interpret(c.code, c.max_locals_count)
     
     def assertTaggedEqual(self, a, b):
         if is_fixnum(a) and is_fixnum(b):
@@ -242,6 +301,12 @@ class EndToEndTests(unittest.TestCase):
         if is_bool(a) and is_bool(b):
             return self.assertEqual(unbox_bool(a), unbox_bool(b))
         self.fail(f"Values not equal: {a} vs {b}")
+
+    def assertIsCons(self, v):
+        self.assertEqual((v & HEAP_MASK), CONS_TAG, f"Value is not a cons: {hex(v)}")
+
+    def assertAligned(self, ptr):
+        self.assertEqual(ptr % HEAP_ALIGNMENT, 0)
 
     def test_positive_fixnum(self):
         self.assertTaggedEqual(self._run(42), box_fixnum(42))
@@ -335,6 +400,50 @@ class EndToEndTests(unittest.TestCase):
                         200],
                     300]
         self.assertTaggedEqual(self._run(expr), box_fixnum(200))
+
+    def test_cons(self):
+        expr = ["cons", 1, 2]
+        runtime = Runtime()
+        heap_before = runtime.heap_ptr
+        obj = self._run(expr, runtime)
+        self.assertAligned(runtime.heap_ptr)
+        self.assertIsCons(obj)
+        self.assertTaggedEqual(car(runtime.heap, obj), box_fixnum(1))
+        self.assertTaggedEqual(cdr(runtime.heap, obj), box_fixnum(2))
+        self.assertGreater(runtime.heap_ptr, heap_before)
+
+    def test_nested_cons_left(self):
+        expr = ["cons", ["cons", 1, 2], 3]
+        runtime = Runtime()
+        obj = self._run(expr, runtime)
+        self.assertTaggedEqual(cdr(runtime.heap, obj), box_fixnum(3))
+        self.assertAligned(runtime.heap_ptr)
+        self.assertIsCons(obj)
+        left = car(runtime.heap, obj)
+        self.assertIsCons(left)
+        self.assertTaggedEqual(car(runtime.heap, left), box_fixnum(1))
+        self.assertTaggedEqual(cdr(runtime.heap, left), box_fixnum(2))
+        self.assertTaggedEqual(cdr(runtime.heap, obj), box_fixnum(3))
+
+    def test_nested_cons_right(self):
+        expr = ["cons", 1, ["cons", 2, 3]]
+        runtime = Runtime()
+        obj = self._run(expr, runtime)
+        self.assertAligned(runtime.heap_ptr)
+        self.assertIsCons(obj)
+        self.assertTaggedEqual(car(runtime.heap, obj), box_fixnum(1))
+        right = cdr(runtime.heap, obj)
+        self.assertIsCons(right)
+        self.assertTaggedEqual(car(runtime.heap, right), box_fixnum(2))
+        self.assertTaggedEqual(cdr(runtime.heap, right), box_fixnum(3))
+
+    def test_car(self):
+        expr = ["car", ["cons", 10, 20]]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(10))
+
+    def test_cdr(self):
+        expr = ["cdr", ["cons", 10, 20]]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(20))
 
 if __name__ == "__main__":
     unittest.main()
