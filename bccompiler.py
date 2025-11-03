@@ -79,6 +79,7 @@ class I:
     PRIM_NOT, \
     PRIM_IS_INTEGER, \
     PRIM_IS_BOOLEAN, \
+    PRIM_ADD, \
     *_ = range(1000)
 
 def compile_expr(expr, code, si, env):
@@ -114,6 +115,10 @@ def compile_expr(expr, code, si, env):
         case ["boolean?", e]:
             compile_expr(e, code, si, env)
             emit(I.PRIM_IS_BOOLEAN)
+        case ["+", e0, e1]:
+            compile_expr(e0, code, si, env)
+            compile_expr(e1, code, si, env)
+            emit(I.PRIM_ADD)
         case _:
             raise NotImplementedError(expr)
 
@@ -148,6 +153,16 @@ def interpret(code):
             case I.PRIM_NOT:
                 v = stack.pop()
                 push(box_bool(not unbox_bool(v)))
+            case I.PRIM_IS_INTEGER:
+                v = stack.pop()
+                push(box_bool(is_fixnum(v)))
+            case I.PRIM_IS_BOOLEAN:
+                v = stack.pop()
+                push(box_bool(is_bool(v)))
+            case I.PRIM_ADD:
+                right = stack.pop()
+                left = stack.pop()
+                push(box_fixnum(unbox_fixnum(left) + unbox_fixnum(right)))
             case _:
                 raise NotImplementedError(instr)
     return stack.pop()
@@ -209,6 +224,22 @@ class EndToEndTests(unittest.TestCase):
     def test_not(self):
         self.assertTaggedEqual(self._run(["not", ["zero?", 0]]), box_bool(False))
         self.assertTaggedEqual(self._run(["not", ["zero?", 1]]), box_bool(True))
+
+    def test_is_integer(self):
+        self.assertTaggedEqual(self._run(["integer?", 42]), box_bool(True))
+        self.assertTaggedEqual(self._run(["integer?", True]), box_bool(False))
+        self.assertTaggedEqual(self._run(["integer?", Char('A')]), box_bool(False))
+        self.assertTaggedEqual(self._run(["integer?", ["add1", 5]]), box_bool(True))
+
+    def test_is_boolean(self):
+        self.assertTaggedEqual(self._run(["boolean?", True]), box_bool(True))
+        self.assertTaggedEqual(self._run(["boolean?", False]), box_bool(True))
+        self.assertTaggedEqual(self._run(["boolean?", ["zero?", 0]]), box_bool(True))
+        self.assertTaggedEqual(self._run(["boolean?", 42]), box_bool(False))
+
+    def test_add(self):
+        self.assertTaggedEqual(self._run(["+", 40, 2]), box_fixnum(42))
+        self.assertTaggedEqual(self._run(["+", ["add1", 1], ["add1", 2]]), box_fixnum(5))
 
 if __name__ == "__main__":
     unittest.main()
