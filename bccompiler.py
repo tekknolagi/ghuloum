@@ -82,6 +82,8 @@ class I:
     PRIM_ADD, \
     LOAD_LOCAL, \
     STORE_LOCAL, \
+    JUMP_IF_FALSE, \
+    JUMP, \
     *_ = range(1000)
 
 class Compiler:
@@ -91,6 +93,14 @@ class Compiler:
 
     def compile(self, expr, env):
         emit = self.code.append
+        def current_pos():
+            return len(self.code)
+        def placeholder():
+            result = current_pos()
+            emit(None)
+            return result
+        def patch_placeholder(pos):
+            self.code[pos] = current_pos()
         match expr:
             case bool(_):
                 emit(I.LOAD64)
@@ -136,12 +146,23 @@ class Compiler:
                 self.compile(e1, env)
                 emit(I.PRIM_ADD)
             case ["let", [[name, value]], body]:
+                # TODO(max): Support multiple bindings
                 self.compile(value, env)
                 slot = len(env)
                 emit(I.STORE_LOCAL)
                 emit(slot)
                 self.max_locals_count = max(self.max_locals_count, slot + 1)
                 self.compile(body, {**env, name: ["local", slot]})
+            case ["if", cond, conseq, altern]:
+                self.compile(cond, env)
+                emit(I.JUMP_IF_FALSE)
+                jump_if_false_pos = placeholder()
+                self.compile(conseq, env)
+                emit(I.JUMP)
+                jump_pos = placeholder()
+                patch_placeholder(jump_if_false_pos)
+                self.compile(altern, env)
+                patch_placeholder(jump_pos)
             case _:
                 raise NotImplementedError(expr)
 
@@ -196,6 +217,13 @@ def interpret(code, max_locals_count):
                 slot = readword()
                 val = stack.pop()
                 stack[frame_base + slot] = val
+            case I.JUMP_IF_FALSE:
+                target = readword()
+                cond = stack.pop()
+                if cond == box_bool(False):
+                    pc = target
+            case I.JUMP:
+                pc = readword()
             case _:
                 raise NotImplementedError(instr)
     return stack.pop()
@@ -287,6 +315,18 @@ class EndToEndTests(unittest.TestCase):
                 ["let", [["y", ["add1", "x"]]],
                     ["+", "x", "y"]]]
         self.assertTaggedEqual(self._run(expr), box_fixnum(21))
+
+    def test_if_true(self):
+        expr = ["if", ["zero?", 0],
+                    42,
+                    17]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(42))
+
+    def test_if_false(self):
+        expr = ["if", ["zero?", 1],
+                    42,
+                    17]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(17))
 
 if __name__ == "__main__":
     unittest.main()
