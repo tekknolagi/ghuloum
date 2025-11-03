@@ -328,5 +328,13 @@ class EndToEndTests(unittest.TestCase):
                     17]
         self.assertTaggedEqual(self._run(expr), box_fixnum(17))
 
+    def test_nested_if(self):
+        expr = ["if", ["zero?", 0],
+                    ["if", ["zero?", 1],
+                        100,
+                        200],
+                    300]
+        self.assertTaggedEqual(self._run(expr), box_fixnum(200))
+
 if __name__ == "__main__":
     unittest.main()
