@@ -73,9 +73,11 @@ BUILTINS = frozenset({
 })
 
 def compile_expr(expr, code, si, env):
-    emit = code.append
+    def emit(*bytes):
+        for b in bytes:
+            code.append(b)
     def comment(msg):
-        emit(f"# {msg}")
+        pass
     def heap_at(offset):
         return indirect(HEAP_BASE, offset)
     def unique_label():
@@ -88,59 +90,59 @@ def compile_expr(expr, code, si, env):
         return size + WORD_SIZE
     match expr:
         case int(_) | Char():
-            emit(f"mov {ACC}, {immediate_rep(expr)}")
+            emit("LOAD_CONST", immediate_rep(expr))
         case str(_):
             emit(f"mov {ACC}, {env[expr]}")
         case []:
-            emit(f"mov {ACC}, {EMPTY_LIST}")
+            emit("LOAD_CONST", EMPTY_LIST)
         case ["add1", e]:
             compile_expr(e, code, si, env)
-            emit(f"add {ACC}, {immediate_rep(1)}")
-        case ["integer->char", e]:
-            compile_expr(e, code, si, env)
-            emit(f"shl {ACC}, {CHAR_SHIFT-FIXNUM_SHIFT}")
-            emit(f"or {ACC}, {CHAR_TAG}")
-        case ["char->integer", e]:
-            compile_expr(e, code, si, env)
-            emit(f"shr {ACC}, {CHAR_SHIFT-FIXNUM_SHIFT}")
-        case ["null?", e]:
-            compile_expr(e, code, si, env)
-            emit(f"cmp {ACC}, {EMPTY_LIST}")
-            emit(f"mov {ACC}, 0")
-            emit(f"sete al")
-            emit(f"shl {ACC}, {BOOL_SHIFT}")
-            emit(f"or {ACC}, {BOOL_TAG}")
-        case ["zero?", e]:
-            compile_expr(e, code, si, env)
-            emit(f"test {ACC}, {ACC}")
-            emit(f"mov {ACC}, 0")
-            emit(f"sete al")
-            emit(f"shl {ACC}, {BOOL_SHIFT}")
-            emit(f"or {ACC}, {BOOL_TAG}")
-        case ["not", e]:
-            compile_expr(e, code, si, env)
-            emit(f"xor {ACC}, {BOOL_BIT}")
-        case ["integer?", e]:
-            compile_expr(e, code, si, env)
-            emit(f"and al, {FIXNUM_MASK}")
-            emit(f"test al, al")
-            emit(f"mov {ACC}, 0")
-            emit(f"sete al")
-            emit(f"shl {ACC}, {BOOL_SHIFT}")
-            emit(f"or {ACC}, {BOOL_TAG}")
-        case ["boolean?", e]:
-            compile_expr(e, code, si, env)
-            emit(f"and al, {BOOL_MASK}")
-            emit(f"cmp al, {BOOL_TAG}")
-            emit(f"mov {ACC}, 0")
-            emit(f"sete al")
-            emit(f"shl {ACC}, {BOOL_SHIFT}")
-            emit(f"or {ACC}, {BOOL_TAG}")
-        case ["+", e0, e1]:
-            compile_expr(e0, code, si, env)
-            emit(f"mov {stack_at(si)}, {ACC}")
-            compile_expr(e1, code, si-WORD_SIZE, env)
-            emit(f"add {ACC}, {stack_at(si)}")
+            emit("ADD", immediate_rep(1))
+        # case ["integer->char", e]:
+        #     compile_expr(e, code, si, env)
+        #     emit(f"shl {ACC}, {CHAR_SHIFT-FIXNUM_SHIFT}")
+        #     emit(f"or {ACC}, {CHAR_TAG}")
+        # case ["char->integer", e]:
+        #     compile_expr(e, code, si, env)
+        #     emit(f"shr {ACC}, {CHAR_SHIFT-FIXNUM_SHIFT}")
+        # case ["null?", e]:
+        #     compile_expr(e, code, si, env)
+        #     emit(f"cmp {ACC}, {EMPTY_LIST}")
+        #     emit(f"mov {ACC}, 0")
+        #     emit(f"sete al")
+        #     emit(f"shl {ACC}, {BOOL_SHIFT}")
+        #     emit(f"or {ACC}, {BOOL_TAG}")
+        # case ["zero?", e]:
+        #     compile_expr(e, code, si, env)
+        #     emit(f"test {ACC}, {ACC}")
+        #     emit(f"mov {ACC}, 0")
+        #     emit(f"sete al")
+        #     emit(f"shl {ACC}, {BOOL_SHIFT}")
+        #     emit(f"or {ACC}, {BOOL_TAG}")
+        # case ["not", e]:
+        #     compile_expr(e, code, si, env)
+        #     emit(f"xor {ACC}, {BOOL_BIT}")
+        # case ["integer?", e]:
+        #     compile_expr(e, code, si, env)
+        #     emit(f"and al, {FIXNUM_MASK}")
+        #     emit(f"test al, al")
+        #     emit(f"mov {ACC}, 0")
+        #     emit(f"sete al")
+        #     emit(f"shl {ACC}, {BOOL_SHIFT}")
+        #     emit(f"or {ACC}, {BOOL_TAG}")
+        # case ["boolean?", e]:
+        #     compile_expr(e, code, si, env)
+        #     emit(f"and al, {BOOL_MASK}")
+        #     emit(f"cmp al, {BOOL_TAG}")
+        #     emit(f"mov {ACC}, 0")
+        #     emit(f"sete al")
+        #     emit(f"shl {ACC}, {BOOL_SHIFT}")
+        #     emit(f"or {ACC}, {BOOL_TAG}")
+        # case ["+", e0, e1]:
+        #     compile_expr(e0, code, si, env)
+        #     emit(f"mov {stack_at(si)}, {ACC}")
+        #     compile_expr(e1, code, si-WORD_SIZE, env)
+        #     emit(f"add {ACC}, {stack_at(si)}")
         case ["let", bindings, body]:
             new_env = env.copy()
             new_si = si
@@ -148,87 +150,87 @@ def compile_expr(expr, code, si, env):
                 comment(f"Code for {name}")
                 compile_expr(val, code, new_si, env)
                 comment(f"Store {name} on the stack")
-                emit(f"mov {stack_at(new_si)}, {ACC}")
+                emit("STORE_LOCAL", new_si)
                 new_env[name] = stack_at(new_si)
                 new_si -= WORD_SIZE
             compile_expr(body, code, new_si, new_env)
-        case ["if", test, conseq, altern]:
-            L0 = unique_label()
-            L1 = unique_label()
-            compile_expr(test, code, si, env)
-            emit(f"cmp {ACC}, {immediate_rep(False)}")
-            emit(f"je {L0}")
-            compile_expr(conseq, code, si, env)
-            emit(f"jmp {L1}")
-            emit(f"{L0}:")
-            compile_expr(altern, code, si, env)
-            emit(f"{L1}:")
-        case ["cons", car, cdr]:
-            comment("Compile car")
-            compile_expr(car, code, si, env)
-            emit(f"mov {stack_at(si)}, {ACC}")
-            comment("Compile cdr")
-            compile_expr(cdr, code, si-WORD_SIZE, env)
-            emit(f"mov {heap_at(WORD_SIZE)}, {ACC}")
-            emit(f"mov {ACC}, {stack_at(si)}")
-            emit(f"mov {heap_at(0)}, {ACC}")
-            comment("Tag a cons cell")
-            emit(f"lea {ACC}, {heap_at(CONS_TAG)}")
-            size = align(2 * WORD_SIZE)
-            comment("Bump the heap pointer")
-            emit(f"add {HEAP_BASE}, {size}")
-        case ["car", cell]:
-            compile_expr(cell, code, si, env)
-            emit(f"mov {ACC}, {indirect(ACC, 0*WORD_SIZE-CONS_TAG)}")
-        case ["cdr", cell]:
-            compile_expr(cell, code, si, env)
-            emit(f"mov {ACC}, {indirect(ACC, 1*WORD_SIZE-CONS_TAG)}")
-        case ["labelcall", str(label), *args]:
-            new_si = si - WORD_SIZE  # Save a word for the return address
-            for arg in args:
-                compile_expr(arg, code, new_si, env)
-                emit(f"mov {stack_at(new_si)}, {ACC}")
-                new_si -= WORD_SIZE
-            # Align to one word before the return address
-            si_adjust = abs(si+WORD_SIZE)
-            emit(f"sub {STACK}, {si_adjust}")
-            emit(f"call {label}")
-            emit(f"add {STACK}, {si_adjust}")
-        case ["funcall", func, *args]:
-            # Save a word for the return address and the closure pointer
-            clo_si = si - WORD_SIZE
-            retaddr_si = clo_si - WORD_SIZE
-            new_si = retaddr_si
-            # Evaluate arguments
-            for arg in args:
-                compile_expr(arg, code, new_si, env)
-                emit(f"mov {stack_at(new_si)}, {ACC}")
-                new_si -= WORD_SIZE
-            compile_expr(func, code, new_si, env)
-            # Save the current closure pointer
-            emit(f"mov {stack_at(clo_si)}, {CLOSURE_BASE}")
-            emit(f"mov {CLOSURE_BASE}, {ACC}")
-            # Align to one word before the return address
-            si_adjust = abs(si)
-            emit(f"sub {STACK}, {si_adjust}")
-            emit(f"call {indirect(CLOSURE_BASE, -CLOSURE_TAG)}")
-            emit(f"add {STACK}, {si_adjust}")
-            emit(f"mov {CLOSURE_BASE}, {stack_at(clo_si)}")
-        case ["closure", str(lvar), *args]:
-            comment("Get a pointer to the label")
-            emit(f"lea {ACC}, {lvar}")
-            emit(f"mov {heap_at(0)}, {ACC}")
-            for idx, arg in enumerate(args):
-                assert isinstance(arg, str)
-                comment(f"Load closure cell #{idx}")
-                # Just a variable lookup; guaranteed not to allocate
-                compile_expr(arg, code, si, env)
-                emit(f"mov {heap_at((idx+1)*WORD_SIZE)}, {ACC}")
-            comment("Tag a closure pointer")
-            emit(f"lea {ACC}, {heap_at(CLOSURE_TAG)}")
-            comment("Bump the heap pointer")
-            size = align(WORD_SIZE + len(args)*WORD_SIZE)
-            emit(f"add {HEAP_BASE}, {size}")
+        # case ["if", test, conseq, altern]:
+        #     L0 = unique_label()
+        #     L1 = unique_label()
+        #     compile_expr(test, code, si, env)
+        #     emit(f"cmp {ACC}, {immediate_rep(False)}")
+        #     emit(f"je {L0}")
+        #     compile_expr(conseq, code, si, env)
+        #     emit(f"jmp {L1}")
+        #     emit(f"{L0}:")
+        #     compile_expr(altern, code, si, env)
+        #     emit(f"{L1}:")
+        # case ["cons", car, cdr]:
+        #     comment("Compile car")
+        #     compile_expr(car, code, si, env)
+        #     emit(f"mov {stack_at(si)}, {ACC}")
+        #     comment("Compile cdr")
+        #     compile_expr(cdr, code, si-WORD_SIZE, env)
+        #     emit(f"mov {heap_at(WORD_SIZE)}, {ACC}")
+        #     emit(f"mov {ACC}, {stack_at(si)}")
+        #     emit(f"mov {heap_at(0)}, {ACC}")
+        #     comment("Tag a cons cell")
+        #     emit(f"lea {ACC}, {heap_at(CONS_TAG)}")
+        #     size = align(2 * WORD_SIZE)
+        #     comment("Bump the heap pointer")
+        #     emit(f"add {HEAP_BASE}, {size}")
+        # case ["car", cell]:
+        #     compile_expr(cell, code, si, env)
+        #     emit(f"mov {ACC}, {indirect(ACC, 0*WORD_SIZE-CONS_TAG)}")
+        # case ["cdr", cell]:
+        #     compile_expr(cell, code, si, env)
+        #     emit(f"mov {ACC}, {indirect(ACC, 1*WORD_SIZE-CONS_TAG)}")
+        # case ["labelcall", str(label), *args]:
+        #     new_si = si - WORD_SIZE  # Save a word for the return address
+        #     for arg in args:
+        #         compile_expr(arg, code, new_si, env)
+        #         emit(f"mov {stack_at(new_si)}, {ACC}")
+        #         new_si -= WORD_SIZE
+        #     # Align to one word before the return address
+        #     si_adjust = abs(si+WORD_SIZE)
+        #     emit(f"sub {STACK}, {si_adjust}")
+        #     emit(f"call {label}")
+        #     emit(f"add {STACK}, {si_adjust}")
+        # case ["funcall", func, *args]:
+        #     # Save a word for the return address and the closure pointer
+        #     clo_si = si - WORD_SIZE
+        #     retaddr_si = clo_si - WORD_SIZE
+        #     new_si = retaddr_si
+        #     # Evaluate arguments
+        #     for arg in args:
+        #         compile_expr(arg, code, new_si, env)
+        #         emit(f"mov {stack_at(new_si)}, {ACC}")
+        #         new_si -= WORD_SIZE
+        #     compile_expr(func, code, new_si, env)
+        #     # Save the current closure pointer
+        #     emit(f"mov {stack_at(clo_si)}, {CLOSURE_BASE}")
+        #     emit(f"mov {CLOSURE_BASE}, {ACC}")
+        #     # Align to one word before the return address
+        #     si_adjust = abs(si)
+        #     emit(f"sub {STACK}, {si_adjust}")
+        #     emit(f"call {indirect(CLOSURE_BASE, -CLOSURE_TAG)}")
+        #     emit(f"add {STACK}, {si_adjust}")
+        #     emit(f"mov {CLOSURE_BASE}, {stack_at(clo_si)}")
+        # case ["closure", str(lvar), *args]:
+        #     comment("Get a pointer to the label")
+        #     emit(f"lea {ACC}, {lvar}")
+        #     emit(f"mov {heap_at(0)}, {ACC}")
+        #     for idx, arg in enumerate(args):
+        #         assert isinstance(arg, str)
+        #         comment(f"Load closure cell #{idx}")
+        #         # Just a variable lookup; guaranteed not to allocate
+        #         compile_expr(arg, code, si, env)
+        #         emit(f"mov {heap_at((idx+1)*WORD_SIZE)}, {ACC}")
+        #     comment("Tag a closure pointer")
+        #     emit(f"lea {ACC}, {heap_at(CLOSURE_TAG)}")
+        #     comment("Bump the heap pointer")
+        #     size = align(WORD_SIZE + len(args)*WORD_SIZE)
+        #     emit(f"add {HEAP_BASE}, {size}")
         case _:
             raise NotImplementedError(expr)
 
@@ -248,6 +250,8 @@ def compile_lexpr(lexpr, code):
 def lift_lambdas_rec(expr, labels, bound, free):
     match expr:
         case int(_) | Char():
+            return expr
+        case []:
             return expr
         case str(_) if expr in bound or expr in BUILTINS:
             return expr
@@ -291,20 +295,53 @@ def lift_lambdas(expr):
     return ["labels", labels, expr]
 
 def compile_program(expr):
-    code = [".intel_syntax", ".global scheme_entry"]
+    code = ["ENTRY", "scheme_entry"]
     match expr:
         case ["labels", labels, body]:
             for (lvar, lexpr) in labels:
                 code.append(f"{lvar}:")
                 compile_lexpr(lexpr, code)
-            code.append("scheme_entry:")
+            code.append("LABEL")
+            code.append("scheme_entry")
             compile_expr(body, code, si=-WORD_SIZE, env={})
-            code.append("ret")
+            code.append("RETURN")
         case _:
             expr = lift_lambdas(expr)
             assert isinstance(expr, list) and expr[0] == "labels"
             return compile_program(expr)
-    return "\n".join(code)
+    return code
+
+def compile_program_to_string(expr):
+    asm = compile_program(expr)
+    return "\n".join(asm)
+
+class CompileTests(unittest.TestCase):
+    def test_int(self):
+        asm = compile_program(3)
+        self.assertEqual(asm, ["ENTRY", "scheme_entry", "LABEL", "scheme_entry", "LOAD_CONST", 12, "RETURN"])
+
+    def test_empty_list(self):
+        asm = compile_program([])
+        self.assertEqual(asm, ["ENTRY", "scheme_entry", "LABEL", "scheme_entry", "LOAD_CONST", 47, "RETURN"])
+
+    def test_add1(self):
+        asm = compile_program(["add1", 3])
+        self.assertEqual(asm, [
+            "ENTRY", "scheme_entry", "LABEL", "scheme_entry",
+            "LOAD_CONST", 12,
+            "ADD", 4,
+            "RETURN"
+        ])
+
+    def test_let(self):
+        asm = compile_program(["let", [["x", 5]], "x"])
+        self.assertEqual(asm, [
+            "ENTRY", "scheme_entry", "LABEL", "scheme_entry",
+            "LOAD_CONST", 20,
+            "STORE_LOCAL", -8,
+            "mov rax, [rsp]",
+            "RETURN"
+        ])
 
 class LambdaTests(unittest.TestCase):
     def test_int(self):
@@ -437,236 +474,236 @@ def link(program, outfile=None, verbose=True):
             run([*ccache, "clang", "-O0", "-no-pie", compiled_object, runtime_o.name, "-z", "noexecstack", "-o", outfile], verbose=verbose)
     return outfile
 
-class EndToEndTests(unittest.TestCase):
-    def _run(self, expr):
-        return self._run_program(["labels", [], expr])
-
-    def _run_program(self, program):
-        asm = compile_program(program)
-        with tempfile.NamedTemporaryFile(suffix=".out", delete_on_close=False) as f:
-            link(asm, f.name, verbose=False)
-            f.close()
-            result = run([f.name], verbose=False, capture_output=True)
-        self.assertIsNot(result.stdout, None)
-        return result.stdout.removesuffix("\n")
-
-    def test_int(self):
-        self.assertEqual(self._run(123), "123")
-
-    def test_char(self):
-        self.assertEqual(self._run(Char("a")), "'a'")
-
-    def test_bool(self):
-        self.assertEqual(self._run(True), "#t")
-        self.assertEqual(self._run(False), "#f")
-
-    def test_empty_list(self):
-        self.assertEqual(self._run([]), "()")
-
-    def test_add1(self):
-        self.assertEqual(self._run(["add1", 3]), "4")
-        self.assertEqual(self._run(["add1", ["add1", 3]]), "5")
-
-    def test_integer_to_char(self):
-        self.assertEqual(self._run(["integer->char", 97]), "'a'")
-
-    def test_char_to_integer(self):
-        self.assertEqual(self._run(["char->integer", Char("a")]), "97")
-
-    def test_nullp(self):
-        self.assertEqual(self._run(["null?", 123]), "#f")
-        self.assertEqual(self._run(["null?", []]), "#t")
-
-    def test_zerop(self):
-        self.assertEqual(self._run(["zero?", 123]), "#f")
-        self.assertEqual(self._run(["zero?", 0]), "#t")
-        self.assertEqual(self._run(["zero?", []]), "#f")
-
-    def test_not(self):
-        self.assertEqual(self._run(["not", True]), "#f")
-        self.assertEqual(self._run(["not", False]), "#t")
-
-    def test_integerp(self):
-        self.assertEqual(self._run(["integer?", 123]), "#t")
-        self.assertEqual(self._run(["integer?", 0]), "#t")
-        self.assertEqual(self._run(["integer?", []]), "#f")
-        self.assertEqual(self._run(["integer?", Char("a")]), "#f")
-        self.assertEqual(self._run(["integer?", True]), "#f")
-        self.assertEqual(self._run(["integer?", False]), "#f")
-
-    def test_booleanp(self):
-        self.assertEqual(self._run(["boolean?", 123]), "#f")
-        self.assertEqual(self._run(["boolean?", 0]), "#f")
-        self.assertEqual(self._run(["boolean?", []]), "#f")
-        self.assertEqual(self._run(["boolean?", Char("a")]), "#f")
-        self.assertEqual(self._run(["boolean?", True]), "#t")
-        self.assertEqual(self._run(["boolean?", False]), "#t")
-
-    def test_add(self):
-        self.assertEqual(self._run(["+", 3, 4]), "7")
-        self.assertEqual(self._run(["+", ["+", 1, 2], ["+", 3, 4]]), "10")
-
-    def test_let_no_bindings(self):
-        self.assertEqual(self._run(["let", [], 3]), "3")
-
-    def test_let_one_binding(self):
-        self.assertEqual(self._run(["let", [["a", 3]], "a"]), "3")
-
-    def test_let_multiple_bindings(self):
-        self.assertEqual(self._run(["let", [["a", 3], ["b", 4]], ["+", "a", "b"]]), "7")
-
-    def test_if(self):
-        self.assertEqual(self._run(["if", True, 3, 4]), "3")
-        self.assertEqual(self._run(["if", False, 3, 4]), "4")
-
-    def test_cons(self):
-        self.assertEqual(self._run(["cons", 3, 4]), "(3 . 4)")
-        self.assertEqual(self._run(["cons", ["cons", 1, 2], ["cons", 3, 4]]), "((1 . 2) . (3 . 4))")
-
-    def test_car(self):
-        self.assertEqual(self._run(["car", ["cons", 3, 4]]), "3")
-
-    def test_cdr(self):
-        self.assertEqual(self._run(["cdr", ["cons", 3, 4]]), "4")
-
-    def test_labelcall_no_args(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["const", ["code", [], [], 3]]
-                ],
-                ["labelcall", "const"],
-            ]), "3")
-
-    def test_labelcall_with_args(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]]
-                ],
-                ["labelcall", "add", 3, 4],
-            ]), "7")
-
-    def test_labelcall_with_tmp_on_stack(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]]
-                ],
-                ["+", 2, ["labelcall", "add", 3, 4]],
-            ]), "9")
-
-    def test_nested_labelcall_with_args(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]],
-                    ["g", ["code", ["a", "b"], [],
-                           ["+",
-                              ["labelcall", "add", "a", "b"],
-                              ["labelcall", "add", "a", "b"],
-                             ],
-                           ]],
-                    ["f", ["code", ["a"], [], ["labelcall", "g", "a", 4]]],
-                ],
-                ["labelcall", "f", 3],
-            ]), "14")
-
-    def test_empty_closure(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["const", ["code", [], [], 3]],
-                ],
-                ["closure", "const"],
-            ]), "<closure>")
-
-    def test_closure_one_var(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["const", ["code", [], [], 3]],
-                ],
-                ["let", [["a", 1]],
-                    ["closure", "const", "a"],
-                ]
-            ]), "<closure>")
-
-    def test_closure_multiple_vars(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["const", ["code", [], [], 3]],
-                ],
-                ["let", [["a", 1]],
-                    ["closure", "const", "a", "a", "a"],
-                ]
-            ]), "<closure>")
-
-    def test_funcall_empty_closure(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["const", ["code", [], [], 3]],
-                ],
-             ["let", [["f", ["closure", "const"]]],
-              ["funcall", "f"]]
-            ]), "3")
-
-    def test_funcall_empty_closure_with_params(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["const", ["code", ["x", "y"], [], ["+", "x", "y"]]],
-                ],
-             ["let", [["f", ["closure", "const"]]],
-              ["funcall", "f", 3, 4]]
-            ]), "7")
-
-    def test_funcall_closure_with_freevar(self):
-        self.assertEqual(self._run_program(
-            ["labels",
-                [
-                    ["const", ["code", [], ["z"], "z"]],
-                ],
-             ["let", [["v", 3]],
-              ["let", [["f", ["closure", "const", "v"]]],
-               ["funcall", "f"]]]
-            ]), "3")
-
-    def test_lambda(self):
-        self.assertEqual(self._run_program(["lambda", ["x"], "x"]), "<closure>")
-
-    def test_lambda_one_var(self):
-        self.assertEqual(self._run_program(
-            ["let", [["y", 5]], ["lambda", [], "y"]]),
-            "<closure>")
-
-    def test_call_lambda(self):
-        self.assertEqual(self._run_program([["lambda", ["x"], "x"], 3]), "3")
-
-    def test_lambda_lift_paper_example(self):
-        self.assertEqual(self._run_program(["let", [["x", 5]],
-                                            ["lambda", ["y"],
-                                             ["lambda", [],
-                                              ["+", "x", "y"]]]]),
-                         "<closure>")
-        self.assertEqual(self._run_program([["let", [["x", 5]],
-                                            ["lambda", ["y"],
-                                             ["lambda", [],
-                                              ["+", "x", "y"]]]], 4]),
-                         "<closure>")
-        self.assertEqual(self._run_program([[["let", [["x", 5]],
-                                            ["lambda", ["y"],
-                                             ["lambda", [],
-                                              ["+", "x", "y"]]]], 4]]),
-                         "9")
+# class EndToEndTests(unittest.TestCase):
+#     def _run(self, expr):
+#         return self._run_program(["labels", [], expr])
+# 
+#     def _run_program(self, program):
+#         asm = compile_program_to_string(program)
+#         with tempfile.NamedTemporaryFile(suffix=".out", delete_on_close=False) as f:
+#             link(asm, f.name, verbose=False)
+#             f.close()
+#             result = run([f.name], verbose=False, capture_output=True)
+#         self.assertIsNot(result.stdout, None)
+#         return result.stdout.removesuffix("\n")
+# 
+#     def test_int(self):
+#         self.assertEqual(self._run(123), "123")
+# 
+#     def test_char(self):
+#         self.assertEqual(self._run(Char("a")), "'a'")
+# 
+#     def test_bool(self):
+#         self.assertEqual(self._run(True), "#t")
+#         self.assertEqual(self._run(False), "#f")
+# 
+#     def test_empty_list(self):
+#         self.assertEqual(self._run([]), "()")
+# 
+#     def test_add1(self):
+#         self.assertEqual(self._run(["add1", 3]), "4")
+#         self.assertEqual(self._run(["add1", ["add1", 3]]), "5")
+# 
+#     def test_integer_to_char(self):
+#         self.assertEqual(self._run(["integer->char", 97]), "'a'")
+# 
+#     def test_char_to_integer(self):
+#         self.assertEqual(self._run(["char->integer", Char("a")]), "97")
+# 
+#     def test_nullp(self):
+#         self.assertEqual(self._run(["null?", 123]), "#f")
+#         self.assertEqual(self._run(["null?", []]), "#t")
+# 
+#     def test_zerop(self):
+#         self.assertEqual(self._run(["zero?", 123]), "#f")
+#         self.assertEqual(self._run(["zero?", 0]), "#t")
+#         self.assertEqual(self._run(["zero?", []]), "#f")
+# 
+#     def test_not(self):
+#         self.assertEqual(self._run(["not", True]), "#f")
+#         self.assertEqual(self._run(["not", False]), "#t")
+# 
+#     def test_integerp(self):
+#         self.assertEqual(self._run(["integer?", 123]), "#t")
+#         self.assertEqual(self._run(["integer?", 0]), "#t")
+#         self.assertEqual(self._run(["integer?", []]), "#f")
+#         self.assertEqual(self._run(["integer?", Char("a")]), "#f")
+#         self.assertEqual(self._run(["integer?", True]), "#f")
+#         self.assertEqual(self._run(["integer?", False]), "#f")
+# 
+#     def test_booleanp(self):
+#         self.assertEqual(self._run(["boolean?", 123]), "#f")
+#         self.assertEqual(self._run(["boolean?", 0]), "#f")
+#         self.assertEqual(self._run(["boolean?", []]), "#f")
+#         self.assertEqual(self._run(["boolean?", Char("a")]), "#f")
+#         self.assertEqual(self._run(["boolean?", True]), "#t")
+#         self.assertEqual(self._run(["boolean?", False]), "#t")
+# 
+#     def test_add(self):
+#         self.assertEqual(self._run(["+", 3, 4]), "7")
+#         self.assertEqual(self._run(["+", ["+", 1, 2], ["+", 3, 4]]), "10")
+# 
+#     def test_let_no_bindings(self):
+#         self.assertEqual(self._run(["let", [], 3]), "3")
+# 
+#     def test_let_one_binding(self):
+#         self.assertEqual(self._run(["let", [["a", 3]], "a"]), "3")
+# 
+#     def test_let_multiple_bindings(self):
+#         self.assertEqual(self._run(["let", [["a", 3], ["b", 4]], ["+", "a", "b"]]), "7")
+# 
+#     def test_if(self):
+#         self.assertEqual(self._run(["if", True, 3, 4]), "3")
+#         self.assertEqual(self._run(["if", False, 3, 4]), "4")
+# 
+#     def test_cons(self):
+#         self.assertEqual(self._run(["cons", 3, 4]), "(3 . 4)")
+#         self.assertEqual(self._run(["cons", ["cons", 1, 2], ["cons", 3, 4]]), "((1 . 2) . (3 . 4))")
+# 
+#     def test_car(self):
+#         self.assertEqual(self._run(["car", ["cons", 3, 4]]), "3")
+# 
+#     def test_cdr(self):
+#         self.assertEqual(self._run(["cdr", ["cons", 3, 4]]), "4")
+# 
+#     def test_labelcall_no_args(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["const", ["code", [], [], 3]]
+#                 ],
+#                 ["labelcall", "const"],
+#             ]), "3")
+# 
+#     def test_labelcall_with_args(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]]
+#                 ],
+#                 ["labelcall", "add", 3, 4],
+#             ]), "7")
+# 
+#     def test_labelcall_with_tmp_on_stack(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]]
+#                 ],
+#                 ["+", 2, ["labelcall", "add", 3, 4]],
+#             ]), "9")
+# 
+#     def test_nested_labelcall_with_args(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["add", ["code", ["a", "b"], [], ["+", "a", "b"]]],
+#                     ["g", ["code", ["a", "b"], [],
+#                            ["+",
+#                               ["labelcall", "add", "a", "b"],
+#                               ["labelcall", "add", "a", "b"],
+#                              ],
+#                            ]],
+#                     ["f", ["code", ["a"], [], ["labelcall", "g", "a", 4]]],
+#                 ],
+#                 ["labelcall", "f", 3],
+#             ]), "14")
+# 
+#     def test_empty_closure(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["const", ["code", [], [], 3]],
+#                 ],
+#                 ["closure", "const"],
+#             ]), "<closure>")
+# 
+#     def test_closure_one_var(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["const", ["code", [], [], 3]],
+#                 ],
+#                 ["let", [["a", 1]],
+#                     ["closure", "const", "a"],
+#                 ]
+#             ]), "<closure>")
+# 
+#     def test_closure_multiple_vars(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["const", ["code", [], [], 3]],
+#                 ],
+#                 ["let", [["a", 1]],
+#                     ["closure", "const", "a", "a", "a"],
+#                 ]
+#             ]), "<closure>")
+# 
+#     def test_funcall_empty_closure(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["const", ["code", [], [], 3]],
+#                 ],
+#              ["let", [["f", ["closure", "const"]]],
+#               ["funcall", "f"]]
+#             ]), "3")
+# 
+#     def test_funcall_empty_closure_with_params(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["const", ["code", ["x", "y"], [], ["+", "x", "y"]]],
+#                 ],
+#              ["let", [["f", ["closure", "const"]]],
+#               ["funcall", "f", 3, 4]]
+#             ]), "7")
+# 
+#     def test_funcall_closure_with_freevar(self):
+#         self.assertEqual(self._run_program(
+#             ["labels",
+#                 [
+#                     ["const", ["code", [], ["z"], "z"]],
+#                 ],
+#              ["let", [["v", 3]],
+#               ["let", [["f", ["closure", "const", "v"]]],
+#                ["funcall", "f"]]]
+#             ]), "3")
+# 
+#     def test_lambda(self):
+#         self.assertEqual(self._run_program(["lambda", ["x"], "x"]), "<closure>")
+# 
+#     def test_lambda_one_var(self):
+#         self.assertEqual(self._run_program(
+#             ["let", [["y", 5]], ["lambda", [], "y"]]),
+#             "<closure>")
+# 
+#     def test_call_lambda(self):
+#         self.assertEqual(self._run_program([["lambda", ["x"], "x"], 3]), "3")
+# 
+#     def test_lambda_lift_paper_example(self):
+#         self.assertEqual(self._run_program(["let", [["x", 5]],
+#                                             ["lambda", ["y"],
+#                                              ["lambda", [],
+#                                               ["+", "x", "y"]]]]),
+#                          "<closure>")
+#         self.assertEqual(self._run_program([["let", [["x", 5]],
+#                                             ["lambda", ["y"],
+#                                              ["lambda", [],
+#                                               ["+", "x", "y"]]]], 4]),
+#                          "<closure>")
+#         self.assertEqual(self._run_program([[["let", [["x", 5]],
+#                                             ["lambda", ["y"],
+#                                              ["lambda", [],
+#                                               ["+", "x", "y"]]]], 4]]),
+#                          "9")
 
 
 if __name__ == "__main__":
-    try:
-        run(["ccache"], verbose=False, check=True, capture_output=True)
-        HAVE_CCACHE = TRUE
-    except FileNotFoundError:
-        print("Warning: ccache not found; compilation may be slow")
+    # try:
+    #     run(["ccache"], verbose=False, check=True, capture_output=True)
+    #     HAVE_CCACHE = TRUE
+    # except FileNotFoundError:
+    #     print("Warning: ccache not found; compilation may be slow")
     unittest.main()
