@@ -536,6 +536,8 @@ def main():
     source = sys.stdin.read()
     program = Parser(source).parse()
     c_code = compile_program(program)
+    with open("a.c", "w+") as f:
+        f.write(c_code)
     link(c_code, "a.out", verbose=False)
 
 if __name__ == "__main__":
