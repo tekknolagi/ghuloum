@@ -114,8 +114,10 @@ def lift_lambdas(expr):
     return ["labels", labels, expr]
 
 def compile_program(expr):
+    with open("cruntime.c", "r") as f:
+        cruntime = f.read()
     code = [
-        open("cruntime.c", "r").read()
+        cruntime
     ]
     match expr:
         case ["labels", labels, body]:
