@@ -93,6 +93,22 @@ def compile_expr(expr, code, env):
         case ["null?", e]:
             o = compile_expr(e, code, env)
             return bind(f"({o} == {EMPTY_LIST}) ? {immediate_rep(True)} : {immediate_rep(False)}", "null?")
+        case ["zero?", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"({o} == {immediate_rep(0)}) ? {immediate_rep(True)} : {immediate_rep(False)}", "zero?")
+        case ["not", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"{o} ^ {BOOL_BIT}", "not")
+        case ["integer?", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"({o} & {FIXNUM_MASK}) ? {immediate_rep(False)} : {immediate_rep(True)}", "integer?")
+        case ["boolean?", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"(({o} & {BOOL_MASK}) == {BOOL_TAG}) ? {immediate_rep(True)} : {immediate_rep(False)}", "boolean?")
+        case ["+", e0, e1]:
+            l = compile_expr(e0, code, env)
+            r = compile_expr(e1, code, env)
+            return bind(f"{l} + {r}", "+")
         case _:
             raise NotImplementedError(expr)
 
@@ -217,6 +233,35 @@ class EndToEndTests(unittest.TestCase):
     def test_nullp(self):
         self.assertEqual(self._run(["null?", 123]), "#f")
         self.assertEqual(self._run(["null?", []]), "#t")
+
+    def test_zerop(self):
+        self.assertEqual(self._run(["zero?", 123]), "#f")
+        self.assertEqual(self._run(["zero?", 0]), "#t")
+        self.assertEqual(self._run(["zero?", []]), "#f")
+
+    def test_not(self):
+        self.assertEqual(self._run(["not", True]), "#f")
+        self.assertEqual(self._run(["not", False]), "#t")
+
+    def test_integerp(self):
+        self.assertEqual(self._run(["integer?", 123]), "#t")
+        self.assertEqual(self._run(["integer?", 0]), "#t")
+        self.assertEqual(self._run(["integer?", []]), "#f")
+        self.assertEqual(self._run(["integer?", Char("a")]), "#f")
+        self.assertEqual(self._run(["integer?", True]), "#f")
+        self.assertEqual(self._run(["integer?", False]), "#f")
+
+    def test_booleanp(self):
+        self.assertEqual(self._run(["boolean?", 123]), "#f")
+        self.assertEqual(self._run(["boolean?", 0]), "#f")
+        self.assertEqual(self._run(["boolean?", []]), "#f")
+        self.assertEqual(self._run(["boolean?", Char("a")]), "#f")
+        self.assertEqual(self._run(["boolean?", True]), "#t")
+        self.assertEqual(self._run(["boolean?", False]), "#t")
+
+    def test_add(self):
+        self.assertEqual(self._run(["+", 3, 4]), "7")
+        self.assertEqual(self._run(["+", ["+", 1, 2], ["+", 3, 4]]), "10")
 
 if __name__ == "__main__":
     unittest.main()
