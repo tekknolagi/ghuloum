@@ -239,6 +239,104 @@ def compile_program(expr):
             return compile_program(expr)
     return "\n".join(code)
 
+class Parser:
+    def __init__(self, source: str):
+        self.source = source
+        self.pos = 0
+        self.length = len(source)
+
+    def at_end(self) -> bool:
+        return self.pos >= self.length
+
+    def skip_whitespace(self):
+        while not self.at_end() and self.source[self.pos].isspace():
+            self.pos += 1
+
+    def peek(self) -> str:
+        if self.at_end():
+            return ''
+        return self.source[self.pos]
+
+    def parse_number(self) -> int:
+        start_pos = self.pos
+        while self.peek().isdigit():
+            self.pos += 1
+        num_str = self.source[start_pos:self.pos]
+        return int(num_str)
+
+    def is_identifier_start(self, c: str) -> bool:
+        return c.isalpha() or c in {'-', '_', '?', '!', '=', '+', '*', '/'}
+
+    def is_identifier_continue(self, c: str) -> bool:
+        return c.isdigit() or self.is_identifier_start(c)
+
+    def parse_identifier(self) -> str:
+        start_pos = self.pos
+        while self.is_identifier_continue(self.peek()):
+            self.pos += 1
+        ident_str = self.source[start_pos:self.pos]
+        return ident_str
+
+    def parse_list(self) -> list:
+        elements = []
+        while True:
+            self.skip_whitespace()
+            if self.peek() == ')':
+                self.pos += 1
+                break
+            elements.append(self.parse())
+        return elements
+
+    def parse(self) -> object:
+        self.skip_whitespace()
+        match self.peek():
+            case '':
+                raise EOFError("Unexpected end of input")
+            case c if c.isdigit():
+                return self.parse_number()
+            case c if self.is_identifier_start(c):
+                return self.parse_identifier()
+            case '(':
+                self.pos += 1  # consume '('
+                return self.parse_list()
+            case c:
+                raise NotImplementedError(f"Parser only supports numbers currently. Found {c}")
+
+class ParseTests(unittest.TestCase):
+    def _parse(self, source: str) -> object:
+        return Parser(source).parse()
+
+    def test_parse_fixnum(self):
+        self.assertEqual(self._parse("42"), 42)
+
+    def test_parse_identifier(self):
+        self.assertEqual(self._parse("foo"), "foo")
+        self.assertEqual(self._parse("      bar-123"), "bar-123")
+        self.assertEqual(self._parse("is-valid?"), "is-valid?")
+        self.assertEqual(self._parse("="), "=")
+        self.assertEqual(self._parse("set!"), "set!")
+        self.assertEqual(self._parse("!"), "!")
+        self.assertEqual(self._parse("+"), "+")
+        self.assertEqual(self._parse("-"), "-")
+        self.assertEqual(self._parse("*"), "*")
+        self.assertEqual(self._parse("/"), "/")
+        self.assertEqual(self._parse("-foo"), "-foo")
+        self.assertEqual(self._parse("-17"), "-17")
+
+    def test_parse_empty_list(self):
+        self.assertEqual(self._parse("(          )"), [])
+
+    def test_parse_list_of_numbers(self):
+        self.assertEqual(self._parse("(1 2 3)"), [1, 2, 3])
+
+    def test_parse_list_of_identifiers(self):
+        self.assertEqual(self._parse("(foo bar baz)"), ["foo", "bar", "baz"])
+        self.assertEqual(self._parse("(          foo bar baz         )"), ["foo", "bar", "baz"])
+
+    def test_parse_nested_lists(self):
+        self.assertEqual(self._parse("(define (square x) (* x x))"),
+                         ["define", ["square", "x"], ["*", "x", "x"]])
+
 HAVE_CCACHE = True
 
 def link(program, outfile=None, verbose=True):
@@ -436,5 +534,12 @@ class EndToEndTests(unittest.TestCase):
                                               ["+", "x", "y"]]]], 4]]),
                          "9")
 
+def main():
+    import sys
+    source = sys.stdin.read()
+    program = Parser(source).parse()
+    c_code = compile_program(program)
+    link(c_code, "a.out", verbose=False)
+
 if __name__ == "__main__":
-    unittest.main()
+    main()
