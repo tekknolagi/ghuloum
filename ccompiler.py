@@ -79,6 +79,8 @@ def compile_expr(expr, code, env):
     match expr:
         case int(_) | Char():
             return immediate_rep(expr)
+        case str(_):
+            return env[expr]
         case []:
             return EMPTY_LIST
         case ["add1", e]:
@@ -109,6 +111,11 @@ def compile_expr(expr, code, env):
             l = compile_expr(e0, code, env)
             r = compile_expr(e1, code, env)
             return bind(f"{l} + {r}", "+")
+        case ["let", bindings, body]:
+            new_env = env.copy()
+            for (name, val) in bindings:
+                new_env[name] = compile_expr(val, code, env)
+            return compile_expr(body, code, new_env)
         case _:
             raise NotImplementedError(expr)
 
@@ -262,6 +269,16 @@ class EndToEndTests(unittest.TestCase):
     def test_add(self):
         self.assertEqual(self._run(["+", 3, 4]), "7")
         self.assertEqual(self._run(["+", ["+", 1, 2], ["+", 3, 4]]), "10")
+
+    def test_let_no_bindings(self):
+        self.assertEqual(self._run(["let", [], 3]), "3")
+
+    def test_let_one_binding(self):
+        self.assertEqual(self._run(["let", [["a", 3]], "a"]), "3")
+
+    def test_let_multiple_bindings(self):
+        self.assertEqual(self._run(["let", [["a", 3], ["b", 4]], ["+", "a", "b"]]), "7")
+
 
 if __name__ == "__main__":
     unittest.main()
