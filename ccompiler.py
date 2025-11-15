@@ -68,12 +68,14 @@ def compile_expr(expr, code, env):
         global NEXT_VARIABLE
         NEXT_VARIABLE += 1
         return f"v{NEXT_VARIABLE}"
-    def bind(e, comment_=""):
+    def bindprim(t, e, comment_=""):
         if comment_:
             comment(comment_)
         v = unique_var()
-        emit(f"Object {v} = {e};")
+        emit(f"{t} {v} = {e};")
         return v
+    def bind(e, comment_=""):
+        return bindprim("Object", e, comment_)
     match expr:
         case int(_) | Char():
             return immediate_rep(expr)
@@ -88,6 +90,9 @@ def compile_expr(expr, code, env):
         case ["char->integer", e]:
             o = compile_expr(e, code, env)
             return bind(f"{o} >> {CHAR_SHIFT - FIXNUM_SHIFT}", "char->integer")
+        case ["null?", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"({o} == {EMPTY_LIST}) ? {immediate_rep(True)} : {immediate_rep(False)}", "null?")
         case _:
             raise NotImplementedError(expr)
 
@@ -209,6 +214,9 @@ class EndToEndTests(unittest.TestCase):
     def test_char_to_integer(self):
         self.assertEqual(self._run(["char->integer", Char("a")]), "97")
 
+    def test_nullp(self):
+        self.assertEqual(self._run(["null?", 123]), "#f")
+        self.assertEqual(self._run(["null?", []]), "#t")
 
 if __name__ == "__main__":
     unittest.main()
