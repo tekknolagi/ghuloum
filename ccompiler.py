@@ -53,6 +53,9 @@ BUILTINS = frozenset({
     "cons", "car", "cdr",
 })
 
+NEXT_LABEL = -1
+NEXT_VARIABLE = -1
+
 def compile_expr(expr, code, env):
     emit = code.append
     def comment(msg):
@@ -61,10 +64,22 @@ def compile_expr(expr, code, env):
         global NEXT_LABEL
         NEXT_LABEL += 1
         return f"L{NEXT_LABEL}"
+    def unique_var():
+        global NEXT_VARIABLE
+        NEXT_VARIABLE += 1
+        return f"v{NEXT_VARIABLE}"
+    def bind(e):
+        v = unique_var()
+        emit(f"Object {v} = {e};")
+        return v
     match expr:
         case int(_) | Char():
             return immediate_rep(expr)
-            # emit(f"mov {ACC}, {immediate_rep(expr)}")
+        case []:
+            return EMPTY_LIST
+        case ["add1", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"{o} + {immediate_rep(1)}")
         case _:
             raise NotImplementedError(expr)
 
@@ -162,6 +177,23 @@ class EndToEndTests(unittest.TestCase):
 
     def test_int(self):
         self.assertEqual(self._run(123), "123")
+
+    def test_negative_int(self):
+        self.assertEqual(self._run(123), "123")
+
+    def test_char(self):
+        self.assertEqual(self._run(Char("a")), "'a'")
+
+    def test_bool(self):
+        self.assertEqual(self._run(True), "#t")
+        self.assertEqual(self._run(False), "#f")
+
+    def test_empty_list(self):
+        self.assertEqual(self._run([]), "()")
+
+    def test_add1(self):
+        self.assertEqual(self._run(["add1", 3]), "4")
+        self.assertEqual(self._run(["add1", ["add1", 3]]), "5")
 
 if __name__ == "__main__":
     unittest.main()
