@@ -116,6 +116,26 @@ def compile_expr(expr, code, env):
             for (name, val) in bindings:
                 new_env[name] = compile_expr(val, code, env)
             return compile_expr(body, code, new_env)
+        case ["if", test, conseq, altern]:
+            vtest = compile_expr(test, code, env)
+            result = unique_var()
+            emit(f"Object {result};")
+            emit(f"if ({vtest} != {immediate_rep(False)}) {{")
+            emit(f"{result} = {compile_expr(conseq, code, env)};")
+            emit("} else {")
+            emit(f"{result} = {compile_expr(altern, code, env)};")
+            emit("}")
+            return result
+        case ["cons", car, cdr]:
+            vcar = compile_expr(car, code, env)
+            vcdr = compile_expr(cdr, code, env)
+            return bind(f"cons({vcar}, {vcdr})")
+        case ["car", e]:
+            o = compile_expr(e, code, env)
+            return f"car({o})"
+        case ["cdr", e]:
+            o = compile_expr(e, code, env)
+            return f"cdr({o})"
         case _:
             raise NotImplementedError(expr)
 
@@ -279,6 +299,19 @@ class EndToEndTests(unittest.TestCase):
     def test_let_multiple_bindings(self):
         self.assertEqual(self._run(["let", [["a", 3], ["b", 4]], ["+", "a", "b"]]), "7")
 
+    def test_if(self):
+        self.assertEqual(self._run(["if", True, 3, 4]), "3")
+        self.assertEqual(self._run(["if", False, 3, 4]), "4")
+
+    def test_cons(self):
+        self.assertEqual(self._run(["cons", 3, 4]), "(3 . 4)")
+        self.assertEqual(self._run(["cons", ["cons", 1, 2], ["cons", 3, 4]]), "((1 . 2) . (3 . 4))")
+
+    def test_car(self):
+        self.assertEqual(self._run(["car", ["cons", 3, 4]]), "3")
+
+    def test_cdr(self):
+        self.assertEqual(self._run(["cdr", ["cons", 3, 4]]), "4")
 
 if __name__ == "__main__":
     unittest.main()

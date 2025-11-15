@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 typedef uint64_t Object;
 
@@ -38,6 +39,13 @@ bool is_char(Object obj) {
 char unbox_char(Object obj) {
   assert(is_char(obj));
   return obj >> char_shift;
+}
+
+Object cons(Object car, Object cdr) {
+  Object *result = malloc(2 * sizeof(Object));
+  result[0] = car;
+  result[1] = cdr;
+  return (Object)result | cons_tag;
 }
 
 bool is_cons(Object obj) {
