@@ -68,7 +68,9 @@ def compile_expr(expr, code, env):
         global NEXT_VARIABLE
         NEXT_VARIABLE += 1
         return f"v{NEXT_VARIABLE}"
-    def bind(e):
+    def bind(e, comment_=""):
+        if comment_:
+            comment(comment_)
         v = unique_var()
         emit(f"Object {v} = {e};")
         return v
@@ -79,7 +81,13 @@ def compile_expr(expr, code, env):
             return EMPTY_LIST
         case ["add1", e]:
             o = compile_expr(e, code, env)
-            return bind(f"{o} + {immediate_rep(1)}")
+            return bind(f"{o} + {immediate_rep(1)}", "add1")
+        case ["integer->char", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"({o} << {CHAR_SHIFT - FIXNUM_SHIFT}) | {CHAR_TAG}", "integer->char")
+        case ["char->integer", e]:
+            o = compile_expr(e, code, env)
+            return bind(f"{o} >> {CHAR_SHIFT - FIXNUM_SHIFT}", "char->integer")
         case _:
             raise NotImplementedError(expr)
 
@@ -194,6 +202,13 @@ class EndToEndTests(unittest.TestCase):
     def test_add1(self):
         self.assertEqual(self._run(["add1", 3]), "4")
         self.assertEqual(self._run(["add1", ["add1", 3]]), "5")
+
+    def test_integer_to_char(self):
+        self.assertEqual(self._run(["integer->char", 97]), "'a'")
+
+    def test_char_to_integer(self):
+        self.assertEqual(self._run(["char->integer", Char("a")]), "97")
+
 
 if __name__ == "__main__":
     unittest.main()
