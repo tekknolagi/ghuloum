@@ -74,6 +74,22 @@ bool is_empty_list(Object obj) {
   return obj == empty_list;
 }
 
+Object make_closure(void *func, int num_slots) {
+  Object *result = malloc(num_slots + 1); // for func
+  result[0] = (Object)func;
+  return (Object)result | closure_tag;
+}
+
+void *closure_func(Object obj) {
+  assert(is_closure(obj));
+  return (void*)unbox_heap(obj)[0];
+}
+
+Object *closure_env(Object obj) {
+  assert(is_closure(obj));
+  return unbox_heap(obj) + sizeof(Object);
+}
+
 void print_obj(Object obj) {
   FILE *fp = stdout;
   if (is_fixnum(obj)) {

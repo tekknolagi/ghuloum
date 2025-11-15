@@ -78,11 +78,11 @@ def compile_expr(expr, code, env):
         return bindprim("Object", e, comment_)
     match expr:
         case int(_) | Char():
-            return immediate_rep(expr)
+            return str(immediate_rep(expr))
         case str(_):
             return env[expr]
         case []:
-            return EMPTY_LIST
+            return str(EMPTY_LIST)
         case ["add1", e]:
             o = compile_expr(e, code, env)
             return bind(f"{o} + {immediate_rep(1)}", "add1")
@@ -136,8 +136,43 @@ def compile_expr(expr, code, env):
         case ["cdr", e]:
             o = compile_expr(e, code, env)
             return f"cdr({o})"
+        case ["funcall", func, *args]:
+            clo = compile_expr(func, code, env)
+            n = len(args)
+            arg_types = "".join([", Object"]*n)
+            emit(f"typedef Object (*Func{n})(Object*{arg_types});")
+            clo_func = bindprim(f"Func{n}", f"closure_func({clo})")
+            clo_env = bindprim("Object *", f"closure_env({clo})")
+            vargs = [compile_expr(arg, code, env) for arg in args]
+            arg_values = ", ".join([clo_env] + vargs)
+            return bind(f"(*{clo_func})({arg_values})")
+        case ["closure", str(lvar), *args]:
+            n = len(args)
+            closure = bind(f"make_closure(FUNC_{lvar}, {n})")
+            if args:
+                clo_env = bindprim("Object *", f"closure_env({closure})")
+            for idx, arg in enumerate(args):
+                varg = compile_expr(arg, code, env)
+                emit(f"{clo_env}[{idx}] = {varg};")
+            return closure
         case _:
             raise NotImplementedError(expr)
+
+def compile_lexpr(lvar, lexpr, code):
+    match lexpr:
+        case ["code", params, freevars, body]:
+            env = {}
+            for idx, param in enumerate(params):
+                env[param] = param
+            for idx, fvar in enumerate(freevars):
+                env[fvar] = f"$clo[{idx}]"
+            params = ", ".join(["Object *$clo"] + [f"Object {param}" for param in params])
+            code.append(f"Object FUNC_{lvar}({params}) {{")
+            result = compile_expr(body, code, env)
+            code.append(f"return {result};")
+            code.append("}")
+        case _:
+            raise NotImplementedError(lexpr)
 
 def lift_lambdas_rec(expr, labels, bound, free):
     match expr:
@@ -193,9 +228,7 @@ def compile_program(expr):
     match expr:
         case ["labels", labels, body]:
             for (lvar, lexpr) in labels:
-                code.append(f"void {lvar}() {{")
-                compile_lexpr(lexpr, code)
-                code.append("}")
+                compile_lexpr(lvar, lexpr, code)
             code.append("Object scheme_entry(Object *closure) {")
             result = compile_expr(body, code, env={})
             code.append(f"return {result};")
@@ -312,6 +345,96 @@ class EndToEndTests(unittest.TestCase):
 
     def test_cdr(self):
         self.assertEqual(self._run(["cdr", ["cons", 3, 4]]), "4")
+
+    def test_empty_closure(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], [], 3]],
+                ],
+                ["closure", "const"],
+            ]), "<closure>")
+
+    def test_closure_one_var(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], [], 3]],
+                ],
+                ["let", [["a", 1]],
+                    ["closure", "const", "a"],
+                ]
+            ]), "<closure>")
+
+    def test_closure_multiple_vars(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], [], 3]],
+                ],
+                ["let", [["a", 1]],
+                    ["closure", "const", "a", "a", "a"],
+                ]
+            ]), "<closure>")
+
+    def test_funcall_empty_closure(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], [], 3]],
+                ],
+             ["let", [["f", ["closure", "const"]]],
+              ["funcall", "f"]]
+            ]), "3")
+
+    def test_funcall_empty_closure_with_params(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", ["x", "y"], [], ["+", "x", "y"]]],
+                ],
+             ["let", [["f", ["closure", "const"]]],
+              ["funcall", "f", 3, 4]]
+            ]), "7")
+
+    def test_funcall_closure_with_freevar(self):
+        self.assertEqual(self._run_program(
+            ["labels",
+                [
+                    ["const", ["code", [], ["z"], "z"]],
+                ],
+             ["let", [["v", 3]],
+              ["let", [["f", ["closure", "const", "v"]]],
+               ["funcall", "f"]]]
+            ]), "3")
+
+    def test_lambda(self):
+        self.assertEqual(self._run_program(["lambda", ["x"], "x"]), "<closure>")
+
+    def test_lambda_one_var(self):
+        self.assertEqual(self._run_program(
+            ["let", [["y", 5]], ["lambda", [], "y"]]),
+            "<closure>")
+
+    def test_call_lambda(self):
+        self.assertEqual(self._run_program([["lambda", ["x"], "x"], 3]), "3")
+
+    def test_lambda_lift_paper_example(self):
+        self.assertEqual(self._run_program(["let", [["x", 5]],
+                                            ["lambda", ["y"],
+                                             ["lambda", [],
+                                              ["+", "x", "y"]]]]),
+                         "<closure>")
+        self.assertEqual(self._run_program([["let", [["x", 5]],
+                                            ["lambda", ["y"],
+                                             ["lambda", [],
+                                              ["+", "x", "y"]]]], 4]),
+                         "<closure>")
+        self.assertEqual(self._run_program([[["let", [["x", 5]],
+                                            ["lambda", ["y"],
+                                             ["lambda", [],
+                                              ["+", "x", "y"]]]], 4]]),
+                         "9")
 
 if __name__ == "__main__":
     unittest.main()
